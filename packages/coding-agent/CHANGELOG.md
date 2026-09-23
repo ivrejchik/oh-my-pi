@@ -5,6 +5,7 @@
 ### Added
 
 - Added the `claude-mem` memory backend (`memory.backend: claude-mem`): drives the claude-mem worker natively over HTTP for startup context, per-turn prompt registration, tool-result observations, turn summaries, first-turn recall, and the `recall`/`retain`/`reflect` tools. `claudeMem.platformSource` tags omp's writes; omp's reads span every platform source, so Claude Code history stays visible.
+- Added the Keenable web-search engine (`web/keenable`, `KEENABLE_API_KEY`), placed after Exa in the default `web` chain ([#12046](https://github.com/can1357/oh-my-pi/pull/12046)).
 
 ## [18.2.11] - 2026-09-23
 

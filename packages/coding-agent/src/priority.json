@@ -88,6 +88,7 @@
 		"xai-oauth/grok-4.5",
 		"web/zai",
 		"web/exa",
+		"web/keenable",
 		"web/tinyfish",
 		"web/jina",
 		"web/kagi",
