@@ -13,6 +13,11 @@ import { logger, popLoopPhase, prompt, pushLoopPhase, untilAborted } from "@oh-m
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "../async";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
+import {
+	type ClaudeMemSessionState,
+	type ClaudeMemTurnAuthorization,
+	getClaudeMemSessionState,
+} from "../claude-mem/state";
 import { ModelRegistry } from "../config/model-registry";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
@@ -552,6 +557,12 @@ export interface ExecutorOptions {
 	parentArtifactManager?: ArtifactManager;
 	parentHindsightSessionState?: HindsightSessionState;
 	parentMnemopiSessionState?: MnemopiSessionState;
+	parentClaudeMemSessionState?: ClaudeMemSessionState;
+	/**
+	 * Claude-mem authorization captured at the dispatching tool call. Authorizes
+	 * the child's first turn; the child never re-reads the parent's live turn.
+	 */
+	parentClaudeMemDispatch?: ClaudeMemTurnAuthorization;
 	/** Parent agent's eval executor session id. Subagents reuse it so eval state is shared. */
 	parentEvalSessionId?: string;
 	/**
@@ -3096,6 +3107,8 @@ export interface FollowUpTurnOptions {
 	maxRuntimeMs?: number;
 	/** Workpool items accepted by the child yield tool during this turn. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
+	/** Authorization captured when this turn was dispatched; authorizes the child's memory writes for the turn. */
+	claudeMemDispatch?: ClaudeMemTurnAuthorization;
 }
 
 /**
@@ -3160,6 +3173,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	// run's incremental-section flag and retry counters so this turn's guards
 	// evaluate against its own state, not stale accumulators.
 	resetYieldTurnState(session.getToolByName("yield"));
+	getClaudeMemSessionState(session)?.authorizeNextTurn(options.claudeMemDispatch);
 	const ref = AgentRegistry.global().get(id);
 	const sessionFile = ref?.sessionFile ?? undefined;
 
@@ -3219,6 +3233,8 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 			}
 			resetYieldTurnState(session.getToolByName("yield"));
 			await session.setWorkPoolYieldItems(options.workPoolYieldItems ?? []);
+			// The wake's turn consumed the pending token; re-arm it for the retry.
+			getClaudeMemSessionState(session)?.authorizeNextTurn(options.claudeMemDispatch);
 			attemptUnsubscribe = monitor.attach(session);
 		});
 		if (monitor.yieldCalled()) {
@@ -3798,6 +3814,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				subagentEventBus: options.subagentEventBus,
 				parentHindsightSessionState: options.parentHindsightSessionState,
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
+				parentClaudeMemSessionState: options.parentClaudeMemSessionState,
+				parentClaudeMemDispatch: options.parentClaudeMemDispatch,
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
 				agentId: id,

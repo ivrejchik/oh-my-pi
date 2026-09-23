@@ -105,6 +105,12 @@ import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
+import {
+	type ClaudeMemSessionState,
+	dispatchOfMessage,
+	getClaudeMemSessionState,
+	setClaudeMemSessionState,
+} from "../claude-mem/state";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import type { ResolvedModelRoleValue } from "../config/model-resolver";
@@ -1045,6 +1051,10 @@ export class AgentSession {
 	 *  went stranded mid-stream gets the message_end its sender's rebuild-skip decision expects
 	 *  (extension-ui-controller's #applyCustomMessageDisplay), matching IrcBridge.flushPending(). */
 	#foldStrandedIrcAsidesIntoContext(records: AgentMessage[]): void {
+		if (records.length === 0) return;
+		// Folded content shapes the next turn without starting one: its senders'
+		// authorizations must have a say over that turn.
+		getClaudeMemSessionState(this)?.authorizeNextTurn(...records.map(dispatchOfMessage));
 		for (const record of records) {
 			this.agent.emitExternalEvent({ type: "message_start", message: record });
 			this.agent.emitExternalEvent({ type: "message_end", message: record });
@@ -1135,6 +1145,10 @@ export class AgentSession {
 				} catch (error) {
 					logger.warn("IRC wake turn observer failed to start", { error: String(error) });
 				}
+				// Ownership is won: this prompt bypasses the memory prompt hook, so the
+				// wake turn is authorized here by the tokens its records carried since
+				// they were delivered — not by whatever the previous turn was allowed.
+				getClaudeMemSessionState(this)?.beginDispatchedTurn(...records.map(dispatchOfMessage));
 				return this.agent.prompt(records);
 			})
 			.catch(error => {
@@ -1357,6 +1371,7 @@ export class AgentSession {
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			getClaudeMemSessionState: () => this.getClaudeMemSessionState(),
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			wakeForIrc: records => this.#wakeForIrc(records),
 			runEphemeralTurn: args => this.runEphemeralTurn(args),
@@ -1528,6 +1543,8 @@ export class AgentSession {
 			setHindsightSessionState: state => this.setHindsightSessionState(state),
 			getMnemopiSessionState: () => this.getMnemopiSessionState(),
 			takeMnemopiSessionState: () => setMnemopiSessionState(this, undefined),
+			getClaudeMemSessionState: () => this.getClaudeMemSessionState(),
+			takeClaudeMemSessionState: () => setClaudeMemSessionState(this, undefined),
 			setBaseSystemPrompt: prompt => {
 				this.#tools.setBaseSystemPrompt(prompt);
 				this.agent.setSystemPrompt(prompt);
@@ -1647,7 +1664,11 @@ export class AgentSession {
 		this.agent.hasBackgroundCompletions = () =>
 			this.yieldQueue.has(LAUNCH_COMPLETION_MESSAGE_TYPE) || this.yieldQueue.has(ASYNC_RESULT_MESSAGE_TYPE);
 		this.agent.setAsideMessageProvider(() => {
-			const thunks: AsideMessage[] = this.#irc.drainPending().map(record => () => record);
+			const pending = this.#irc.drainPending();
+			// Asides join the running turn mid-flight; their senders' tokens fold
+			// into the turn's authorization from this step on.
+			if (pending.length > 0) getClaudeMemSessionState(this)?.authorizeSteer(...pending.map(dispatchOfMessage));
+			const thunks: AsideMessage[] = pending.map(record => () => record);
 			thunks.push(...this.yieldQueue.drainLazy());
 			// Mid-run todo reconciliation — evaluated at injection time so a turn
 			// that flips a todo just before this poll suppresses the nudge.
@@ -2249,6 +2270,10 @@ export class AgentSession {
 
 	getMnemopiSessionState(): MnemopiSessionState | undefined {
 		return getMnemopiSessionState(this);
+	}
+
+	getClaudeMemSessionState(): ClaudeMemSessionState | undefined {
+		return getClaudeMemSessionState(this);
 	}
 
 	/** TTSR manager for time-traveling stream rules */
@@ -4906,6 +4931,7 @@ export class AgentSession {
 
 		const hindsightState = this.getHindsightSessionState();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
+		const claudeMemState = setClaudeMemSessionState(this, undefined);
 		// Bound the wait for a just-fired sharpshooter extraction before dropping
 		// its subscriptions, so print-mode exits don't cut queued-delta writes.
 		const sharpshooterFlushed = flushSharpshooterExtraction(this, options.mnemopiConsolidateTimeoutMs);
@@ -4925,6 +4951,7 @@ export class AgentSession {
 			advisorRecorderClosed,
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
 			this.#disposeMnemopi(mnemopiState, options.mnemopiConsolidateTimeoutMs),
+			claudeMemState?.flush(options.mnemopiConsolidateTimeoutMs) ?? Promise.resolve(),
 			sharpshooterFlushed,
 		]);
 		for (const result of results) {
@@ -4942,6 +4969,7 @@ export class AgentSession {
 		this.#maintenance.cancelSpeculation();
 		this.setHindsightSessionState(undefined);
 		hindsightState?.dispose();
+		claudeMemState?.dispose();
 		this.#disconnectFromAgent();
 		if (this.#unsubscribeAppendOnly) {
 			this.#unsubscribeAppendOnly();

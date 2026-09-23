@@ -1,6 +1,6 @@
 # Autonomous Memory
 
-Oh My Pi supports five memory modes. Memory is disabled by default; select one backend via `/settings` or `config.yml`:
+Oh My Pi supports six memory modes. Memory is disabled by default; select one backend via `/settings` or `config.yml`:
 
 | `memory.backend` | Storage and behavior                                                   | Guide                                                   |
 | ---------------- | ---------------------------------------------------------------------- | ------------------------------------------------------- |
@@ -8,6 +8,7 @@ Oh My Pi supports five memory modes. Memory is disabled by default; select one b
 | `local`          | Project-scoped summaries and lessons generated from persisted sessions | This page                                               |
 | `hindsight`      | Remote, bank-scoped Hindsight memory                                   | [Hindsight](#hindsight-remote-backend)                  |
 | `mnemopi`        | Local Mnemopi SQLite memory                                            | [Mnemopi memory backend](./mnemosyne-memory-backend.md) |
+| `claude-mem`     | Shared claude-mem worker daemon (Claude Code plugin) driven natively over HTTP | [claude-mem memory backend](./claude-mem-memory-backend.md) |
 | `sharpshooter`   | Friction-gated project decision files (architecture/product/style), consolidated in the background | —                           |
 
 Enable the local summary pipeline:
@@ -38,8 +39,10 @@ The agent can read memory files directly using `memory://` URLs with the `read` 
 | `memory://root/learned.md`             | Lessons captured by the `learn` tool |
 | `memory://root/skills/<name>/SKILL.md` | A generated skill playbook           |
 | `memory://<memory-id>`                 | Full Mnemopi memory row (working or episodic) with a YAML frontmatter metadata header; only available when `memory.backend` is `mnemopi` |
+| `memory://<observation-id>`            | Full claude-mem observation (facts and narrative) with a YAML frontmatter metadata header; only available when `memory.backend` is `claude-mem` |
+| `memory://S<session-id>`               | Full claude-mem session summary with a YAML frontmatter metadata header; only available when `memory.backend` is `claude-mem` |
 
-The `memory://<memory-id>` form returns the full stored row rather than the clipped recall preview (recall content that exceeds the preview cap ends with a trailing `…`); agents are instructed to read it before any `memory_edit update`.
+The `memory://<memory-id>` form returns the full stored row rather than the clipped recall preview (recall content that exceeds the preview cap ends with a trailing `…`); agents are instructed to read it before any `memory_edit update`. With claude-mem, `recall` returns an index of observation and session-summary ids; `memory://<observation-id>` and `memory://S<session-id>` return the full entries.
 
 The `memory://root[/…]` rows are file-backed and only exist with `memory.backend: local`, which populates the on-disk memory root via the consolidation pipeline. Under `hindsight` or `mnemopi` the root is never written, so those URLs do not resolve — use `recall`/`reflect` (and `read memory://<memory-id>` on `mnemopi`) instead.
 
@@ -65,7 +68,7 @@ autolearn:
   enabled: true
 ```
 
-With the local backend active, `learn` saves explicit durable lessons to the project's `learned.md`. Lessons are newest-first, deduplicated, secret-redacted, capped at 100 entries, and injected starting with the next session; a `learn` call does not mutate the active session's prompt-cache prefix. Each lesson's content is capped at 2,000 characters and optional context at 400 characters. Structured memory search, `recall`, `retain`, `reflect`, and `memory_edit` are not available for the local backend.
+With the local backend active, `learn` saves explicit durable lessons to the project's `learned.md`. Lessons are newest-first, deduplicated, secret-redacted, capped at 100 entries, and injected starting with the next session; a `learn` call does not mutate the active session's prompt-cache prefix. Each lesson's content is capped at 2,000 characters and optional context at 400 characters. Structured memory search, `recall`, `retain`, `reflect`, and `memory_edit` are not available for the local backend. Hindsight exposes `recall`, `retain`, and `reflect`; Mnemopi exposes `recall`, `retain`, `reflect`, and `memory_edit` (`update`/`forget`/`invalidate`); claude-mem exposes `recall`, `retain`, `reflect`, and `memory_edit` with `forget` only. `learn` retains into whichever of these backends is active.
 
 ## How it works
 
@@ -152,6 +155,17 @@ The primary session recalls on its first model turn (`hindsight.autoRecall: true
 Recall is injected as background context, not instructions, and recalled memory is also available as extra context during compaction. Selecting Hindsight exposes `recall`, `retain`, and `reflect`; `memory_edit` is not available because upstream Hindsight memories are not edited through this backend.
 
 `/memory view`, `/memory stats`, `/memory diagnose`, and `/memory enqueue` operate through the active Hindsight state. `/memory clear` first drains pending retains, then clears only the local session state and recall cache. It **does not delete the server-side bank**; delete that bank with the Hindsight UI or API.
+
+## claude-mem backend
+
+claude-mem drives the worker daemon behind the [claude-mem](https://github.com/thedotmack/claude-mem) Claude Code plugin natively over HTTP, sharing its observation database and project history with Claude Code:
+
+```yaml
+memory:
+  backend: claude-mem
+```
+
+Tool results become observations, every turn is summarized, and the project's recent context is injected at session start. `/memory clear` only drops the local session cache; observations are deleted with `memory_edit forget`. See the [claude-mem memory backend](./claude-mem-memory-backend.md) guide for lifecycle, worker bootstrap, settings, and the [`CLAUDE_MEM_*` environment-variable table](./environment-variables.md#claude-mem-memory-backend).
 
 ## Key files
 

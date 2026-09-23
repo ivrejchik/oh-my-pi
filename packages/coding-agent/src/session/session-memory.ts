@@ -2,6 +2,7 @@
 
 import type { Agent, AgentTool } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { ClaudeMemSessionState } from "../claude-mem/state";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { HindsightSessionState } from "../hindsight/state";
@@ -21,6 +22,8 @@ export interface SessionMemoryHost {
 	setHindsightSessionState(state: HindsightSessionState | undefined): void;
 	getMnemopiSessionState(): MnemopiSessionState | undefined;
 	takeMnemopiSessionState(): MnemopiSessionState | undefined;
+	getClaudeMemSessionState(): ClaudeMemSessionState | undefined;
+	takeClaudeMemSessionState(): ClaudeMemSessionState | undefined;
 	setBaseSystemPrompt(prompt: string[]): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	replaceMemoryTools(tools: AgentTool[]): Promise<void>;
@@ -78,6 +81,7 @@ export class SessionMemory {
 	rekeyForCurrentSessionId(): void {
 		this.#rekeyHindsightMemoryForCurrentSessionId();
 		this.#rekeyMnemopiMemoryForCurrentSessionId();
+		this.#rekeyClaudeMemMemoryForCurrentSessionId();
 	}
 
 	#rekeyHindsightMemoryForCurrentSessionId(): void {
@@ -92,6 +96,13 @@ export class SessionMemory {
 		const sid = this.#host.agent.sessionId;
 		if (!sid) return;
 		this.#host.getMnemopiSessionState()?.setSessionId(sid);
+	}
+
+	#rekeyClaudeMemMemoryForCurrentSessionId(): void {
+		if (this.#host.settings.get("memory.backend") !== "claude-mem") return;
+		const sid = this.#host.agent.sessionId;
+		if (!sid) return;
+		this.#host.getClaudeMemSessionState()?.setSessionId(sid);
 	}
 
 	/** New transcript: reset Hindsight counters and reload its frozen mental-model snapshot. */
@@ -115,16 +126,25 @@ export class SessionMemory {
 		return true;
 	}
 
+	#resetClaudeMemConversationTrackingIfClaudeMem(): boolean {
+		if (this.#host.settings.get("memory.backend") !== "claude-mem") return false;
+		const state = this.#host.getClaudeMemSessionState();
+		if (!state || state.aliasOf) return false;
+		state.resetConversationTracking();
+		return true;
+	}
+
 	/** Resets transcript-scoped memory counters and removes a promoted prompt. */
 	async resetContextForNewTranscript(): Promise<void> {
 		const hadPromotedMemoryPrompt = this.#baseSystemPromptBeforeMemoryPromotion !== undefined;
 		const resetHindsight = this.#resetHindsightConversationTrackingIfHindsight();
 		const resetMnemopi = this.#resetMnemopiConversationTrackingIfMnemopi();
+		const resetClaudeMem = this.#resetClaudeMemConversationTrackingIfClaudeMem();
 		if (hadPromotedMemoryPrompt) {
 			this.#host.setBaseSystemPrompt(this.#baseSystemPromptBeforeMemoryPromotion!);
 			this.#baseSystemPromptBeforeMemoryPromotion = undefined;
 		}
-		if (resetHindsight || resetMnemopi || hadPromotedMemoryPrompt) {
+		if (resetHindsight || resetMnemopi || resetClaudeMem || hadPromotedMemoryPrompt) {
 			await this.#host.refreshBaseSystemPrompt();
 		}
 	}
@@ -173,6 +193,16 @@ export class SessionMemory {
 			} catch (error) {
 				logger.warn("Memory lifecycle: Mnemopi dispose failed", { error: String(error) });
 			}
+		}
+
+		const claudeMem = this.#host.takeClaudeMemSessionState();
+		if (claudeMem) {
+			try {
+				await claudeMem.flush();
+			} catch (error) {
+				logger.warn("Memory lifecycle: claude-mem flush failed", { error: String(error) });
+			}
+			claudeMem.dispose();
 		}
 	}
 

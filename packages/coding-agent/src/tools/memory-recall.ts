@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { formatRecallForTool } from "../claude-mem/content";
 import { isHindsightConfigured, loadHindsightConfig } from "../hindsight/config";
 import { formatCurrentTime, formatMemories } from "../hindsight/content";
 import recallDescription from "../prompts/tools/recall.md" with { type: "text" };
@@ -26,7 +27,7 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 
 	static createIf(session: ToolSession): MemoryRecallTool | null {
 		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "claude-mem") return null;
 		if (backend === "hindsight" && !isHindsightConfigured(loadHindsightConfig(session.settings))) return null;
 		return new MemoryRecallTool(session);
 	}
@@ -60,6 +61,38 @@ export class MemoryRecallTool implements AgentTool<typeof memoryRecallSchema> {
 					};
 				} catch (err) {
 					logger.warn("recall failed", { backend: "mnemopi", bank: state.config.bank, error: String(err) });
+					throw err instanceof Error ? err : new Error(String(err));
+				}
+			}
+
+			if (backend === "claude-mem") {
+				const state = this.session.getClaudeMemSessionState?.();
+				if (!state) {
+					throw new Error("claude-mem backend is not initialised for this session.");
+				}
+				try {
+					const results = await state.search(params.query, { signal });
+					const count = results.observations.length + results.sessions.length;
+					if (count === 0) {
+						return {
+							content: [{ type: "text", text: "No relevant memories found." }],
+							details: {},
+							useless: true,
+						};
+					}
+					const scope = results.widened ? " (no project-scoped matches; showing every project)" : "";
+					const formatted = formatRecallForTool(results.observations, results.sessions);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Found ${count} relevant observation${count === 1 ? "" : "s"}${scope} (as of ${formatCurrentTime()} UTC):\n\n${formatted}`,
+							},
+						],
+						details: {},
+					};
+				} catch (err) {
+					logger.warn("recall failed", { backend: "claude-mem", error: String(err) });
 					throw err instanceof Error ? err : new Error(String(err));
 				}
 			}

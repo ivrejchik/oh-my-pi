@@ -10,6 +10,7 @@ import type { MemoryBackend } from "./types";
  * through this):
  *   - `memory.backend === "hindsight"`  → Hindsight remote memory
  *   - `memory.backend === "mnemopi"`  → local Mnemopi SQLite memory
+ *   - `memory.backend === "claude-mem"` → claude-mem worker (Claude Code plugin daemon)
  *   - `memory.backend === "sharpshooter"` → friction-gated project decision memory
  *   - `memory.backend === "local"`      → local rollout summary pipeline
  *   - everything else                   → no-op
@@ -19,8 +20,11 @@ import type { MemoryBackend } from "./types";
  */
 export async function resolveMemoryBackend(settings: Settings): Promise<MemoryBackend> {
 	const id = settings.get("memory.backend");
+	// Dynamic imports on purpose: backends pull their client/runtime stacks, and
+	// only the selected one may join the CLI startup module graph.
 	if (id === "hindsight") return (await import("../hindsight/backend")).hindsightBackend;
 	if (id === "mnemopi") return (await import("../mnemopi/backend")).mnemopiBackend;
+	if (id === "claude-mem") return (await import("../claude-mem/backend")).claudeMemBackend;
 	if (id === "sharpshooter") return (await import("../sharpshooter/backend")).sharpshooterBackend;
 	if (id === "local") return localBackend;
 	return offBackend;

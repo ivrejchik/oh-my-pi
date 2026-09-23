@@ -17,6 +17,7 @@ import { type IrcMessage, type IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools
  */
 
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { attachDispatchToMessage, dispatchOfMessage, getClaudeMemSessionState } from "../claude-mem/state";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
@@ -104,6 +105,14 @@ export class IrcBus {
 		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
 	): Promise<IrcDeliveryReceipt> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
+		// The sender's claude-mem turn authorization rides on the message from
+		// this point — captured before the roster/revival awaits below, since
+		// the sender may be on another turn by the time the recipient sees it.
+		const senderSession = this.#registry.get(message.from)?.session;
+		attachDispatchToMessage(
+			message,
+			senderSession ? getClaudeMemSessionState(senderSession)?.captureDispatch() : undefined,
+		);
 		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
 			let sent = this.#lastSent.get(message.from);
@@ -114,6 +123,19 @@ export class IrcBus {
 			sent.set(message.to, message.ts);
 		}
 		return receipt;
+	}
+
+	/**
+	 * A message handed to `agentId` outside the session injection path (a
+	 * pending `wait`, a mailbox `take`/`inbox`) lands in that agent's running
+	 * turn as a tool result: fold the sender's authorization into the turn
+	 * before the consumer sees it.
+	 */
+	#expose(agentId: string, messages: readonly IrcMessage[]): void {
+		if (messages.length === 0) return;
+		const session = this.#registry.get(agentId)?.session;
+		if (!session) return;
+		getClaudeMemSessionState(session)?.authorizeSteer(...messages.map(dispatchOfMessage));
 	}
 
 	/**
@@ -192,6 +214,7 @@ export class IrcBus {
 		// the session injection path.
 		const waiter = this.#takeMatchingWaiter(message.to, message.from);
 		if (waiter) {
+			this.#expose(message.to, [message]);
 			waiter.resolve(message);
 			if (!opts?.suppressRelay) this.#relayToMainUi(message);
 			return { to: message.to, outcome: revived ? "revived" : "injected" };
@@ -245,7 +268,10 @@ export class IrcBus {
 		if (options?.drainPending !== false) {
 			// Already-pending mail satisfies the wait without parking a waiter.
 			const pending = this.#takeFromMailbox(agentId, filter.from);
-			if (pending) return pending;
+			if (pending) {
+				this.#expose(agentId, [pending]);
+				return pending;
+			}
 		}
 
 		const { promise, resolve, reject } = Promise.withResolvers<IrcMessage | null>();
@@ -386,6 +412,8 @@ export class IrcBus {
 	inbox(agentId: string, opts?: { peek?: boolean }): IrcMessage[] {
 		const mailbox = this.#mailboxes.get(agentId);
 		if (!mailbox || mailbox.length === 0) return [];
+		// A peek still surfaces the bodies to the reader's turn.
+		this.#expose(agentId, mailbox);
 		if (opts?.peek) return [...mailbox];
 		this.#mailboxes.delete(agentId);
 		return mailbox;
@@ -400,7 +428,9 @@ export class IrcBus {
 	 * between, and a plain `inbox` drain would swallow the whole backlog.
 	 */
 	take(agentId: string, from?: string): IrcMessage | undefined {
-		return this.#takeFromMailbox(agentId, from);
+		const message = this.#takeFromMailbox(agentId, from);
+		if (message) this.#expose(agentId, [message]);
+		return message;
 	}
 
 	unreadCount(agentId: string): number {

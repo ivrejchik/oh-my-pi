@@ -1,4 +1,6 @@
-Edit Mnemopi long-term memories by id. Only ids returned by `recall`.
+Edit long-term memories by id. Only ids returned by `recall`.
+
+With the claude-mem backend only `forget` is available.
 
 Operations:
 - `update`: working memory; replace content and/or importance.

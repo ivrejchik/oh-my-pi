@@ -26,6 +26,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async/job-manager";
+import {
+	combineTurnAuthorizations,
+	type ClaudeMemTurnAuthorization,
+	getClaudeMemSessionState,
+} from "../claude-mem/state";
 import { resolveAgentModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
@@ -159,8 +164,11 @@ interface VibeRecord {
 	};
 	/** Job id of the most recently settled turn (wait snapshots after settle). */
 	lastJobId?: string;
-	/** Messages queued while a turn was in flight; drained into the next turn. */
-	queue: string[];
+	/**
+	 * Messages queued while a turn was in flight, each with the claude-mem
+	 * authorization captured at enqueue time; drained into the next turn.
+	 */
+	queue: Array<{ message: string; dispatch: ClaudeMemTurnAuthorization | undefined }>;
 	turnCount: number;
 	killed: boolean;
 	/** True while a parent switch is detaching this process-local record without terminating it. */
@@ -790,14 +798,18 @@ export class VibeSessionRegistry {
 
 	/** Spawn a persistent worker session and start its first turn in the background. */
 	async spawn(session: ToolSession, args: { cli: VibeCli; name?: string; prompt: string }): Promise<VibeSpawnOutcome> {
+		// Captured before any await: the first turn is authorized by the parent turn that dispatched it,
+		// never by whatever the parent is doing when the turn eventually starts.
+		const dispatch = session.getClaudeMemSessionState?.()?.captureDispatch();
 		const scope = this.ownerScope(session);
-		return this.#withTerminationLock(scope, () => this.#spawnLocked(session, scope, args));
+		return this.#withTerminationLock(scope, () => this.#spawnLocked(session, scope, args, dispatch));
 	}
 
 	async #spawnLocked(
 		session: ToolSession,
 		scope: VibeOwnerScope,
 		args: { cli: VibeCli; name?: string; prompt: string },
+		dispatch: ClaudeMemTurnAuthorization | undefined,
 	): Promise<VibeSpawnOutcome> {
 		if (this.#terminatedScopes.has(scopeKey(scope, ""))) {
 			throw new ToolError("Vibe mode has exited; enter Vibe mode again before spawning a worker.");
@@ -856,7 +868,7 @@ export class VibeSessionRegistry {
 				);
 				if (!spawnPersisted) throw new ToolError("Vibe parent session changed before the worker could start.");
 			}
-			const jobId = this.#registerTurnJob(session, manager, record, args.prompt, { first: true });
+			const jobId = this.#registerTurnJob(session, manager, record, args.prompt, { first: true, dispatch });
 			return { id, jobId };
 		} catch (error) {
 			record.killed = true;
@@ -881,6 +893,7 @@ export class VibeSessionRegistry {
 	 * background turn immediately.
 	 */
 	async send(session: ToolSession, args: { session: string; message: string }): Promise<VibeSendOutcome> {
+		const dispatch = session.getClaudeMemSessionState?.()?.captureDispatch();
 		const scope = this.ownerScope(session);
 		const record = this.#record(scope, args.session);
 		if (record.state === "dead") {
@@ -896,11 +909,12 @@ export class VibeSessionRegistry {
 		if (record.turn) {
 			const live = registered?.session;
 			if (live?.isStreaming) {
+				getClaudeMemSessionState(live)?.authorizeSteer(dispatch);
 				await live.steer(message, undefined, { attribution: "agent" });
 				record.lastActivityAt = Date.now();
 				return { id: record.id, mode: "steered" };
 			}
-			record.queue.push(message);
+			record.queue.push({ message, dispatch });
 			record.lastActivityAt = Date.now();
 			return { id: record.id, mode: "queued" };
 		}
@@ -910,7 +924,7 @@ export class VibeSessionRegistry {
 		}
 
 		const manager = this.#manager(session);
-		const jobId = this.#registerTurnJob(session, manager, record, message, { first: false });
+		const jobId = this.#registerTurnJob(session, manager, record, message, { first: false, dispatch });
 		return { id: record.id, mode: "turn", jobId };
 	}
 
@@ -1262,6 +1276,7 @@ export class VibeSessionRegistry {
 		message: string,
 		signal: AbortSignal,
 		onProgress: (progress: AgentProgress) => void,
+		dispatch: ClaudeMemTurnAuthorization | undefined,
 	): Promise<ExecutorOptions> {
 		const sessionFile = session.getSessionFile();
 		const sessionArtifactsDir = sessionFile ? sessionFile.slice(0, -6) : null;
@@ -1310,6 +1325,8 @@ export class VibeSessionRegistry {
 			parentArtifactManager: session.getArtifactManager?.() ?? undefined,
 			parentHindsightSessionState: session.getHindsightSessionState?.(),
 			parentMnemopiSessionState: session.getMnemopiSessionState?.(),
+			parentClaudeMemSessionState: session.getClaudeMemSessionState?.(),
+			parentClaudeMemDispatch: dispatch,
 			parentTelemetry: session.getTelemetry?.(),
 			parentEvalSessionId: session.getEvalSessionId?.() ?? undefined,
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
@@ -1324,7 +1341,7 @@ export class VibeSessionRegistry {
 		manager: AsyncJobManager,
 		record: VibeRecord,
 		message: string,
-		options: { first: boolean },
+		options: { first: boolean; dispatch: ClaudeMemTurnAuthorization | undefined },
 	): string {
 		const turnIndex = record.turnCount + 1;
 		const turn: VibeTurn = {
@@ -1372,11 +1389,14 @@ export class VibeSessionRegistry {
 						throw new ToolError(`Vibe session "${record.id}" changed parent scope before its turn started.`);
 					}
 					const result = options.first
-						? await runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress))
+						? await runSubprocess(
+								await this.#buildSpawnOptions(session, record, message, signal, onProgress, options.dispatch),
+							)
 						: await runSubagentFollowUpTurn({
 								id: record.id,
 								agent: record.agent,
 								message,
+								claudeMemDispatch: options.dispatch,
 								description: `vibe ${record.cli} session`,
 								signal,
 								onProgress,
@@ -1438,12 +1458,14 @@ export class VibeSessionRegistry {
 			return;
 		}
 		if (record.queue.length === 0) return;
-		const nextMessage = record.queue.splice(0, record.queue.length).join("\n\n");
+		const entries = record.queue.splice(0);
+		const nextMessage = entries.map(entry => entry.message).join("\n\n");
+		const dispatch = combineTurnAuthorizations(entries.map(entry => entry.dispatch));
 		try {
-			this.#registerTurnJob(session, manager, record, nextMessage, { first: false });
+			this.#registerTurnJob(session, manager, record, nextMessage, { first: false, dispatch });
 		} catch (error) {
 			// Leave the messages recoverable: a later vibe_send flushes again.
-			record.queue.unshift(nextMessage);
+			record.queue.unshift({ message: nextMessage, dispatch });
 			logger.warn("vibe: failed to start queued follow-up turn", {
 				id: record.id,
 				error: error instanceof Error ? error.message : String(error),

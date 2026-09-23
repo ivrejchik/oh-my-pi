@@ -22,6 +22,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
 import type { EffectiveExtensionRoots } from "../capability/types";
+import type { ClaudeMemTurnAuthorization } from "../claude-mem/state";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import taskDescriptionTemplate from "../prompts/tools/task.md" with { type: "text" };
@@ -675,6 +676,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const params = repairTaskParams(rawParams as TaskParams);
+		// Captured before any await: every spawn in this call — inline or as a
+		// later-started background job — is authorized by the parent's turn at
+		// dispatch, never by whatever turn the parent is in when the job starts.
+		const claudeMemDispatch = this.session.getClaudeMemSessionState?.()?.captureDispatch();
 		// Schema defaults fill `agent` for model calls, but internal callers
 		// and stale transcripts can bypass arktype. `spawnParamsFor` resolves each
 		// item's agent type against the session's actual default agent.
@@ -769,6 +774,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				params,
 				spawnItems.map((item, index) => ({ item, index })),
 				defaultAgent,
+				claudeMemDispatch,
 				signal,
 				onUpdate,
 			);
@@ -824,6 +830,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					params,
 					spawnItems.map((item, index) => ({ item, index })),
 					defaultAgent,
+					claudeMemDispatch,
 					signal,
 					onUpdate,
 				),
@@ -918,6 +925,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agentId: spawn.agentId,
 					progress: spawn.progress,
 					ircEnabled,
+					claudeMemDispatch,
 					buildDetails: buildAsyncDetails,
 					onUpdate,
 					onSettled: failed => {
@@ -1013,6 +1021,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			toolCallId,
 			params,
 			defaultAgent,
+			claudeMemDispatch,
 			signal,
 			spawns: syncSpawns.map(spawn => ({ item: spawn.item, index: spawn.index, preAllocatedId: spawn.agentId })),
 			onItemProgress: onUpdate
@@ -1077,12 +1086,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		agentId: string;
 		progress: AgentProgress;
 		ircEnabled: boolean;
+		claudeMemDispatch?: ClaudeMemTurnAuthorization;
 		buildDetails: () => TaskToolDetails;
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>;
 		onSettled?: (failed: boolean) => void;
 	}): string {
-		const { manager, toolCallId, spawnParams, agentId, progress, ircEnabled, buildDetails, onUpdate, onSettled } =
-			options;
+		const {
+			manager,
+			toolCallId,
+			spawnParams,
+			agentId,
+			progress,
+			ircEnabled,
+			claudeMemDispatch,
+			buildDetails,
+			onUpdate,
+			onSettled,
+		} = options;
 		const buildFollowUpHint = async (aborted: boolean): Promise<string> => {
 			// Isolated runs are parked without a reviver once the run ends
 			// (`finalizeSubagentLifecycle`), so "message it" would point the
@@ -1184,6 +1204,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.index,
 						true,
 						{ invokedAt: startedAt, acquiredAt },
+						claudeMemDispatch,
 						cleanup => {
 							// Tie the retained temp directory's lifetime to this job
 							// row: the manager runs `cleanup` exactly once, on
@@ -1285,6 +1306,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		params: TaskParams,
 		spawns: SyncSpawnRef[],
 		defaultAgent: string,
+		claudeMemDispatch: ClaudeMemTurnAuthorization | undefined,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
@@ -1304,6 +1326,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					spawn.index,
 					false,
 					{ invokedAt, acquiredAt },
+					claudeMemDispatch,
 				);
 			} finally {
 				this.#releaseSpawnSemaphore();
@@ -1330,6 +1353,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			toolCallId,
 			params,
 			defaultAgent,
+			claudeMemDispatch,
 			signal,
 			spawns,
 			onItemProgress: onUpdate
@@ -1365,11 +1389,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		toolCallId: string;
 		params: TaskParams;
 		defaultAgent: string;
+		claudeMemDispatch: ClaudeMemTurnAuthorization | undefined;
 		spawns: SyncSpawnRef[];
 		signal?: AbortSignal;
 		onItemProgress?: (index: number, progress: AgentProgress) => void;
 	}): Promise<(AgentToolResult<TaskToolDetails> | undefined)[]> {
-		const { toolCallId, params, defaultAgent, spawns, signal, onItemProgress } = args;
+		const { toolCallId, params, defaultAgent, claudeMemDispatch, spawns, signal, onItemProgress } = args;
 		const semaphore = this.#getSpawnSemaphore();
 		const { results } = await mapWithConcurrencyLimitAllSettled(
 			spawns,
@@ -1401,6 +1426,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						spawn.index,
 						false,
 						{ invokedAt, acquiredAt },
+						claudeMemDispatch,
 					);
 				} finally {
 					if (semaphoreHeld) this.#releaseSpawnSemaphore();
@@ -1440,6 +1466,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		claudeMemDispatch?: ClaudeMemTurnAuthorization,
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		return this.#runSpawn(
@@ -1451,6 +1478,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			spawnIndex,
 			detached,
 			launchTiming,
+			claudeMemDispatch,
 			onArtifactsRetained,
 		);
 	}
@@ -1465,6 +1493,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		claudeMemDispatch?: ClaudeMemTurnAuthorization,
 		onArtifactsRetained?: (cleanup: () => Promise<void>) => void,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
@@ -1509,6 +1538,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				enableLsp: (this.session.enableLsp ?? true) && this.session.settings.get("task.enableLsp"),
 				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 				maxRuntimeMs: this.session.settings.get("task.maxRuntimeMs"),
+				claudeMemDispatch,
 				signal,
 				onProgress: progress => {
 					latestProgress = { ...progress, recentTools: progress.recentTools.slice() };

@@ -7,6 +7,7 @@ import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { EvalPreludeDefinition } from "../eval/preludes";
 import type { PromptTemplate } from "../config/prompt-templates";
+import type { ClaudeMemSessionState } from "../claude-mem/state";
 import type { Settings } from "../config/settings";
 import { EditTool } from "../edit";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
@@ -325,6 +326,8 @@ export interface ToolSession {
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */
 	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
+	/** Get claude-mem runtime state for this agent session. */
+	getClaudeMemSessionState?: () => ClaudeMemSessionState | undefined;
 	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
 	getAgentId?: () => string | null;
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
@@ -659,12 +662,15 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		) {
 			requestedTools.push("ast_edit");
 		}
-		if (["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "")) {
+		if (["hindsight", "mnemopi", "claude-mem"].includes(session.settings.get("memory.backend") ?? "")) {
 			for (const name of ["recall", "retain", "reflect"]) {
 				if (!requestedTools.includes(name)) requestedTools.push(name);
 			}
 		}
-		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
+		if (
+			["mnemopi", "claude-mem"].includes(session.settings.get("memory.backend") ?? "") &&
+			!requestedTools.includes("memory_edit")
+		) {
 			requestedTools.push("memory_edit");
 		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
@@ -679,7 +685,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (session.settings.get("autolearn.enabled") && (session.taskDepth ?? 0) === 0) {
 			if (!requestedTools.includes("manage_skill")) requestedTools.push("manage_skill");
 			if (
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "") &&
+				["hindsight", "mnemopi", "claude-mem", "local"].includes(session.settings.get("memory.backend") ?? "") &&
 				!requestedTools.includes("learn")
 			) {
 				requestedTools.push("learn");
@@ -725,9 +731,10 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			);
 		}
 		if (name === "retain" || name === "recall" || name === "reflect") {
-			return ["hindsight", "mnemopi"].includes(session.settings.get("memory.backend") ?? "");
+			return ["hindsight", "mnemopi", "claude-mem"].includes(session.settings.get("memory.backend") ?? "");
 		}
-		if (name === "memory_edit") return session.settings.get("memory.backend") === "mnemopi";
+		if (name === "memory_edit")
+			return ["mnemopi", "claude-mem"].includes(session.settings.get("memory.backend") ?? "");
 		if (name === "manage_skill")
 			return (
 				session.settings.get("autolearn.enabled") &&
@@ -737,7 +744,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			return (
 				session.settings.get("autolearn.enabled") &&
 				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined) &&
-				["hindsight", "mnemopi", "local"].includes(session.settings.get("memory.backend") ?? "")
+				["hindsight", "mnemopi", "claude-mem", "local"].includes(session.settings.get("memory.backend") ?? "")
 			);
 		}
 		if (name === "task") {

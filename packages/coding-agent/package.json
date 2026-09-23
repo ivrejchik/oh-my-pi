@@ -374,6 +374,14 @@
 			"types": "./src/hindsight/*.ts",
 			"import": "./src/hindsight/*.ts"
 		},
+		"./claude-mem": {
+			"types": "./src/claude-mem/index.ts",
+			"import": "./src/claude-mem/index.ts"
+		},
+		"./claude-mem/*": {
+			"types": "./src/claude-mem/*.ts",
+			"import": "./src/claude-mem/*.ts"
+		},
 		"./modes": {
 			"types": "./src/modes/index.ts",
 			"import": "./src/modes/index.ts"
