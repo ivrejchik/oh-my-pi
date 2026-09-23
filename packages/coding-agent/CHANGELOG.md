@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `claude-mem` memory backend (`memory.backend: claude-mem`): drives the claude-mem worker natively over HTTP for startup context, per-turn prompt registration, tool-result observations, turn summaries, first-turn recall, and the `recall`/`retain`/`reflect` tools. `claudeMem.platformSource` tags omp's writes; omp's reads span every platform source, so Claude Code history stays visible.
+
 ## [18.2.11] - 2026-09-23
 
 ### Fixed

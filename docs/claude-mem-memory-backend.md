@@ -15,7 +15,7 @@ Example:
 memory:
   backend: claude-mem
 claudeMem:
-  platformSource: claude
+  platformSource: omp
   recallLimit: 10
 ```
 
@@ -77,7 +77,7 @@ The project name mirrors the plugin's own `getProjectContext(cwd)`: the basename
 
 ## Platform source
 
-Every session and observation is tagged with `claudeMem.platformSource` and reads are filtered by it. The default `claude` shares one memory pool with Claude Code; any other value (for example `omp`) keeps omp memory separate in the same database.
+Every session, prompt, observation, summary, and manual save written by omp is tagged with `claudeMem.platformSource` (default `claude`). omp's reads — startup context, recall, `recall`/`reflect`, `memory://` — send no source filter, so the worker answers from every pool and omp sessions see Claude Code history. Claude Code's own hooks request their startup context with their `claude` source, so a different tag (for example `omp`) keeps omp's sessions out of Claude Code's startup context while leaving them attributable.
 
 ## Agent tools
 
@@ -97,7 +97,7 @@ The optional `learn` tool also retains into claude-mem when `autolearn.enabled: 
 | `memory://<observation-id>`  | Full observation as markdown: YAML front matter (`id`, `kind: observation`, `type`, `project`, `created_at`, `memory_session_id`, `prompt_number`, agent tags, concepts, files, metadata) followed by title, subtitle, `## Facts`, and `## Narrative` |
 | `memory://S<session-id>`     | Full session summary as markdown: YAML front matter (`id: S<n>`, `kind: session_summary`, `project`, `created_at`, `memory_session_id`, `prompt_number`, files) followed by `## Request`, `## Investigated`, `## Learned`, `## Completed`, `## Next steps`, `## Notes` |
 
-Both reads are filtered by the configured platform source; an id that does not exist (or belongs to another platform source) yields no document.
+Reads are not filtered by platform source; an id that does not exist yields no document.
 
 ## `/memory` command
 
@@ -122,7 +122,7 @@ Subagents alias the parent's state. Their tool results are observed under the pa
 | `claudeMem.workerUrl`            | `http://<host>:<port>` from `~/.claude-mem/settings.json`        | Worker base URL. When unset, host and port come from the plugin's `settings.json` (`CLAUDE_MEM_WORKER_HOST`/`CLAUDE_MEM_WORKER_PORT`), then `127.0.0.1` and `37700 + (uid % 100)`. `localhost` is normalised to `127.0.0.1`; a trailing slash is stripped. |
 | `claudeMem.dataDir`              | `~/.claude-mem`                                                  | claude-mem data directory (`settings.json`, database, logs). Also the cwd and `CLAUDE_MEM_DATA_DIR` for an auto-started worker.                                                                         |
 | `claudeMem.pluginRoot`           | newest installed plugin under `~/.claude/plugins/cache/thedotmack/claude-mem` | Directory containing `scripts/worker-service.cjs`. Only used to auto-start the worker and to compare versions.                                                                              |
-| `claudeMem.platformSource`       | `claude`                                                         | Source tag written on sessions and observations and used to filter reads. `claude` shares one pool with Claude Code; any other value keeps omp memory separate.                                         |
+| `claudeMem.platformSource`       | `claude`                                                         | Source tag written on sessions, prompts, observations, and summaries. Reads span every source regardless.                                                                                               |
 | `claudeMem.autoStartWorker`      | `true`                                                           | Launch the worker daemon through the plugin when it is not running.                                                                                                                                     |
 | `claudeMem.autoContext`          | `true`                                                           | Inject the project's recent observations and session summaries at session start.                                                                                                                        |
 | `claudeMem.autoRecall`           | `true`                                                           | Search observations relevant to the first prompt of each session.                                                                                                                                       |
@@ -170,7 +170,7 @@ String values are trimmed and an empty string is ignored. Booleans are case-inse
 
 ## Operational notes
 
-- The worker is one shared daemon per user: Claude Code hooks, the claude-mem MCP server, and every omp session talk to the same instance and database (`<dataDir>/claude-mem.db`). Anything omp records is visible to Claude Code under the same platform source, and vice versa.
+- The worker is one shared daemon per user: Claude Code hooks, the claude-mem MCP server, and every omp session talk to the same instance and database (`<dataDir>/claude-mem.db`). omp reads every platform source; Claude Code's hooks read their own.
 - `/memory clear` only drops omp's local session cache and rebuilds it; no observation or summary is deleted from the worker.
 - Observation extraction is asynchronous: a tool result is accepted immediately and compressed by the worker later. `/memory queue` shows the worker's queue depth alongside omp's own pending HTTP writes.
 - Writes go through one ordered per-session queue (`session-init`, `observation`, `summarize`). A failed write is logged once per outage and dropped; the coding session is never blocked by the worker.

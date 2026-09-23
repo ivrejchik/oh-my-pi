@@ -413,7 +413,7 @@ describe("claudeMemBackend session lifecycle", () => {
 		const { session, settings, project } = await startPrimary(worker, "s-context", { "claudeMem.autoRecall": false });
 
 		const [inject] = worker.received("GET", "/api/context/inject");
-		expect(inject?.query).toMatchObject({ projects: project, platformSource: "claude" });
+		expect(inject?.query).toEqual({ projects: project });
 		expect(session.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
 
 		const instructions = await claudeMemBackend.buildDeveloperInstructions("/tmp", settings, session as never);
@@ -557,7 +557,9 @@ describe("claudeMemBackend session lifecycle", () => {
 		expect(first).toContain("Tabs everywhere");
 
 		const [search] = worker.received("GET", "/api/search");
-		expect(search?.query).toMatchObject({ project, format: "json", platformSource: "claude" });
+		expect(search?.query).toMatchObject({ project, format: "json" });
+		// Reads span every platform source; only writes are tagged.
+		expect(search?.query).not.toHaveProperty("platformSource");
 		expect(search?.query.query).toContain(prompt);
 
 		// A second turn with identical text is a new turn: it registers again and
@@ -1248,7 +1250,7 @@ describe("claude-mem memory references", () => {
 		expect(markdown).toContain("# Fixed null deref");
 		expect(markdown).toContain("## Facts\n- guard added");
 		expect(markdown).toContain("## Narrative\nAdded a null guard.");
-		expect(worker.received("GET", "/api/observation/77")[0]?.query.platformSource).toBe("claude");
+		expect(worker.received("GET", "/api/observation/77")[0]?.query).not.toHaveProperty("platformSource");
 
 		await expect(state.readMemory({ kind: "observation", id: 78 })).resolves.toBeNull();
 	});

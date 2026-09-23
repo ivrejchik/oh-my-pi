@@ -24,7 +24,7 @@ export interface ClaudeMemConfig {
 	pluginRoot?: string;
 	/** Worker base URL, e.g. `http://127.0.0.1:37700`. */
 	workerUrl: string;
-	/** Platform source tag written on every session/observation and used to filter reads. */
+	/** Platform source tag written on every session, prompt, observation, and summary; reads are unfiltered. */
 	platformSource: string;
 	autoStartWorker: boolean;
 	autoContext: boolean;

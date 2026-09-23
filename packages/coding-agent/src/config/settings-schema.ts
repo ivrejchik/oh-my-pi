@@ -3505,7 +3505,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Claude-mem",
 			label: "claude-mem Platform Source",
 			description:
-				"Source tag written on sessions and observations and used to filter reads. `claude` shares one memory pool with Claude Code; any other value keeps omp memory separate",
+				"Source tag written on this agent's sessions, prompts, observations, and summaries. omp reads every source; Claude Code's hooks read only `claude`, so another tag keeps omp sessions out of Claude Code's startup context",
 			condition: "claudeMemActive",
 		},
 	},

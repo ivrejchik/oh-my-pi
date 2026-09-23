@@ -4,8 +4,11 @@
  * Speaks the same REST surface the plugin's own hook CLI and MCP server use
  * (`/api/sessions/*`, `/api/search`, `/api/context/inject`, `/api/memory/save`,
  * …) so an omp session is indistinguishable from a Claude Code session on the
- * worker side. Every request carries the configured `platformSource`; sessions
- * are keyed on `(platform_source, content_session_id)` server-side.
+ * worker side. Writes (prompt, observation, summary, manual save) carry the
+ * configured `platformSource`; sessions are keyed on
+ * `(platform_source, content_session_id)` server-side. Reads send no source, so
+ * the worker answers from every pool: omp sees Claude Code's history and the
+ * other way round.
  */
 
 import { isRecord } from "@oh-my-pi/pi-utils";
@@ -342,7 +345,7 @@ export class ClaudeMemClient {
 	/** SessionStart context block (markdown) for the given project names; last is primary. */
 	async contextInject(projects: string[], signal?: AbortSignal): Promise<string> {
 		const text = await this.#request("GET", "/api/context/inject", "context", {
-			query: { projects: projects.join(","), platformSource: this.platformSource },
+			query: { projects: projects.join(",") },
 			signal,
 			text: true,
 		});
@@ -412,7 +415,6 @@ export class ClaudeMemClient {
 				query,
 				format: "json",
 				project: options.project,
-				platformSource: this.platformSource,
 				limit: options.limit,
 				offset: options.offset,
 				obs_type: options.obsType,
@@ -449,7 +451,6 @@ export class ClaudeMemClient {
 				depth_before: options.depthBefore,
 				depth_after: options.depthAfter,
 				project: options.project,
-				platformSource: this.platformSource,
 			},
 			signal,
 		});
@@ -465,7 +466,6 @@ export class ClaudeMemClient {
 
 	async getObservation(id: number, signal?: AbortSignal): Promise<ClaudeMemObservation | null> {
 		const row = await this.#request("GET", `/api/observation/${id}`, "observation-read", {
-			query: { platformSource: this.platformSource },
 			allow404: true,
 			signal,
 		});
@@ -475,7 +475,7 @@ export class ClaudeMemClient {
 	async getObservations(ids: number[], signal?: AbortSignal): Promise<ClaudeMemObservation[]> {
 		if (ids.length === 0) return [];
 		const rows = await this.#request("POST", "/api/observations/batch", "observations-batch", {
-			body: { ids, platformSource: this.platformSource },
+			body: { ids },
 			signal,
 		});
 		return Array.isArray(rows) ? rows.filter(isRecord).map(normalizeObservation) : [];
@@ -483,7 +483,6 @@ export class ClaudeMemClient {
 
 	async getSessionSummary(id: number, signal?: AbortSignal): Promise<ClaudeMemSessionSummary | null> {
 		const row = await this.#request("GET", `/api/session/${id}`, "session-read", {
-			query: { platformSource: this.platformSource },
 			allow404: true,
 			signal,
 		});
@@ -533,7 +532,6 @@ export class ClaudeMemClient {
 		const timeoutMs = options.timeoutMs ?? this.timeoutMs;
 		const headers: Record<string, string> = {
 			Accept: options.text ? "text/plain, */*" : "application/json",
-			"x-platform-source": this.platformSource,
 		};
 		const init: RequestInit = { method, headers, signal: withTimeoutSignal(timeoutMs, options.signal) };
 		if (options.body !== undefined) {
