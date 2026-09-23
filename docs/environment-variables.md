@@ -502,6 +502,43 @@ one of the listed lowercase values; invalid values are ignored.
 | `HINDSIGHT_RECALL_TIMEOUT_MS`      | `hindsight.recallTimeoutMs`     | Integer milliseconds; default `30000`                                             |
 | `HINDSIGHT_RETAIN_TIMEOUT_MS`      | `hindsight.retainTimeoutMs`     | Integer milliseconds; default `60000`                                             |
 
+### claude-mem memory backend
+
+`loadClaudeMemConfig()` resolves each supported environment override over the corresponding
+`claudeMem.*` setting and then the built-in default. Two knobs also consult the plugin's own
+`~/.claude-mem/settings.json`: the worker host/port fall back to it when no worker URL is set, and its
+`CLAUDE_MEM_API_TIMEOUT_MS` wins over `claudeMem.requestTimeoutMs`. String values are trimmed and an empty
+string is ignored. Boolean values are case-insensitive: only `true`, `1`, and `yes` mean true;
+any other defined value means false. Integer values use base-10 `parseInt`; non-numeric values
+are ignored, and the loader then applies the same minimums as the settings (`recallLimit` and
+`recallContextTurns` ≥ 1, `recallMaxQueryChars` and `injectionTokenLimit` ≥ 0, timeouts ≥ 1000).
+
+| Variable                             | Setting overridden                          | Accepted value / built-in default                                                                        |
+| ------------------------------------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `CLAUDE_MEM_WORKER_URL`              | `claudeMem.workerUrl`                       | Non-empty base URL (trailing slashes stripped); wins over host/port; unset by default                    |
+| `CLAUDE_MEM_WORKER_HOST`             | host of the derived worker URL              | Hostname/IP; `localhost` or empty → `127.0.0.1`, bare IPv6 bracketed; default from plugin `settings.json`, else `127.0.0.1` |
+| `CLAUDE_MEM_WORKER_PORT`             | port of the derived worker URL              | Integer; default from plugin `settings.json`, else `37700 + (uid % 100)`                                 |
+| `CLAUDE_MEM_DATA_DIR`                | `claudeMem.dataDir`                         | Directory path, `~` expanded; default `~/.claude-mem`                                                    |
+| `CLAUDE_PLUGIN_ROOT`                 | `claudeMem.pluginRoot`                      | Directory containing `scripts/worker-service.cjs`, `~` expanded; default newest non-orphaned plugin under `<CLAUDE_CONFIG_DIR>/plugins/cache/thedotmack/claude-mem` |
+| `CLAUDE_CONFIG_DIR`                  | plugin cache search root                    | Directory path; default `~/.claude`                                                                      |
+| `CLAUDE_MEM_API_TIMEOUT_MS`          | `claudeMem.requestTimeoutMs`                | Integer milliseconds; default `30000`                                                                    |
+| `CLAUDE_MEM_PLATFORM_SOURCE`         | `claudeMem.platformSource`                  | Non-empty string; default `claude`                                                                       |
+| `CLAUDE_MEM_AUTO_START_WORKER`       | `claudeMem.autoStartWorker`                 | Boolean; default `true`                                                                                  |
+| `CLAUDE_MEM_AUTO_CONTEXT`            | `claudeMem.autoContext`                     | Boolean; default `true`                                                                                  |
+| `CLAUDE_MEM_AUTO_RECALL`             | `claudeMem.autoRecall`                      | Boolean; default `true`                                                                                  |
+| `CLAUDE_MEM_AUTO_OBSERVE`            | `claudeMem.autoObserve`                     | Boolean; default `true`                                                                                  |
+| `CLAUDE_MEM_OBSERVE_SUBAGENTS`       | `claudeMem.observeSubagents`                | Boolean; default `true`                                                                                  |
+| `CLAUDE_MEM_AUTO_SUMMARIZE`          | `claudeMem.autoSummarize`                   | Boolean; default `true`                                                                                  |
+| `CLAUDE_MEM_RECALL_LIMIT`            | `claudeMem.recallLimit`                     | Integer; default `10`                                                                                    |
+| `CLAUDE_MEM_RECALL_CONTEXT_TURNS`    | `claudeMem.recallContextTurns`              | Integer; default `1`                                                                                     |
+| `CLAUDE_MEM_RECALL_MAX_QUERY_CHARS`  | `claudeMem.recallMaxQueryChars`             | Integer; default `800`                                                                                   |
+| `CLAUDE_MEM_INJECTION_TOKEN_LIMIT`   | `claudeMem.injectionTokenLimit`             | Integer; default `8000` (`0` = unlimited)                                                                |
+| `CLAUDE_MEM_WORKER_START_TIMEOUT_MS` | `claudeMem.workerStartTimeoutMs`            | Integer milliseconds; default `45000`                                                                    |
+| `CLAUDE_MEM_FIRST_TURN_DEADLINE_MS`  | `claudeMem.firstTurnDeadlineMs`             | Integer milliseconds; default `8000`                                                                     |
+| `CLAUDE_MEM_DEBUG`                   | `claudeMem.debug`                           | Boolean; default `false`                                                                                 |
+
+An auto-started worker inherits the resolved `CLAUDE_MEM_DATA_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_CONFIG_DIR`, and `CLAUDE_MEM_WORKER_PORT` in its environment. See the [claude-mem memory backend](./claude-mem-memory-backend.md) guide.
+
 `PI_NO_PTY` is also set internally when CLI `--no-pty` is used.
 
 ---

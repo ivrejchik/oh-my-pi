@@ -218,7 +218,7 @@ export const TAB_GROUPS: Record<SettingTab, readonly string[]> = {
 		"Git",
 	],
 	context: ["General", "Compaction", "Rules (TTSR)", "Experimental"],
-	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight", "Sharpshooter"],
+	memory: ["General", "Auto-Learn", "Mnemopi", "Hindsight", "Claude-mem", "Sharpshooter"],
 	files: ["Editing", "Reading", "Read Summaries", "LSP"],
 	shell: ["Bash", "Eval & Runtimes"],
 	tools: [
@@ -3129,18 +3129,19 @@ export const SETTINGS_SCHEMA = {
 	"memories.summaryInjectionTokenLimit": { type: "number", default: 5000 },
 
 	// Memory backend selector — picks between local memories pipeline,
-	// Mnemopi local SQLite, Hindsight remote memory, Sharpshooter project
-	// decisions, or off. The legacy
+	// Mnemopi local SQLite, Hindsight remote memory, the claude-mem worker,
+	// Sharpshooter project decisions, or off. The legacy
 	// `memories.enabled` flag is migration input only; see config/settings.ts.
 	"memory.backend": {
 		type: "enum",
-		values: ["off", "local", "hindsight", "mnemopi", "sharpshooter"] as const,
+		values: ["off", "local", "hindsight", "mnemopi", "sharpshooter", "claude-mem"] as const,
 		default: "off",
 		ui: {
 			tab: "memory",
 			group: "General",
 			label: "Memory Backend",
-			description: "Off, local summary pipeline, Mnemopi SQLite, Hindsight remote memory, or Sharpshooter",
+			description:
+				"Off, local summary pipeline, Mnemopi SQLite, Hindsight remote memory, claude-mem worker, or Sharpshooter",
 			options: [
 				{ value: "off", label: "Off", description: "No memory subsystem runs" },
 				{ value: "local", label: "Local", description: "Local rollout summarisation pipeline (memory_summary.md)" },
@@ -3149,6 +3150,12 @@ export const SETTINGS_SCHEMA = {
 					value: "mnemopi",
 					label: "Mnemopi",
 					description: "Local SQLite recall/retain backend with optional embeddings",
+				},
+				{
+					value: "claude-mem",
+					label: "claude-mem",
+					description:
+						"claude-mem worker (Claude Code plugin daemon): observations, session summaries, context injection",
 				},
 				{
 					value: "sharpshooter",
@@ -3607,6 +3614,149 @@ export const SETTINGS_SCHEMA = {
 	},
 	"hindsight.mentalModelRefreshIntervalMs": { type: "number", default: 5 * 60 * 1000 },
 	"hindsight.mentalModelMaxRenderChars": { type: "number", default: 16_000 },
+
+	// claude-mem (https://github.com/thedotmack/claude-mem) — talks to the plugin's worker daemon.
+	"claudeMem.workerUrl": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Worker URL",
+			description:
+				"Worker base URL. Defaults to http://<CLAUDE_MEM_WORKER_HOST>:<CLAUDE_MEM_WORKER_PORT> from ~/.claude-mem/settings.json",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.dataDir": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Data Dir",
+			description: "claude-mem data directory (settings.json, database, logs). Defaults to ~/.claude-mem",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.pluginRoot": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Plugin Root",
+			description:
+				"Directory containing scripts/worker-service.cjs. Defaults to the newest installed plugin under ~/.claude/plugins/cache/thedotmack/claude-mem",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.platformSource": {
+		type: "string",
+		default: "claude",
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Platform Source",
+			description:
+				"Source tag written on sessions and observations and used to filter reads. `claude` shares one memory pool with Claude Code; any other value keeps omp memory separate",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.autoStartWorker": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Auto-Start Worker",
+			description: "Launch the worker daemon through the plugin when it is not running",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.autoContext": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Startup Context",
+			description: "Inject the project's recent observations and session summaries at session start",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.autoRecall": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Auto Recall",
+			description: "Search observations relevant to the first prompt of each session",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.autoObserve": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Auto Observe",
+			description: "Send every tool result to the worker for observation extraction",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.observeSubagents": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Observe Subagents",
+			description: "Also observe subagent tool results (tagged with the subagent id)",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.autoSummarize": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Auto Summarize",
+			description: "Queue a session summary from the final assistant message after every turn",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.recallLimit": {
+		type: "number",
+		default: 10,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Recall Limit",
+			description: "Maximum observations returned by recall and first-turn injection",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.recallContextTurns": { type: "number", default: 1 },
+	"claudeMem.recallMaxQueryChars": { type: "number", default: 800 },
+	"claudeMem.injectionTokenLimit": {
+		type: "number",
+		default: 8_000,
+		ui: {
+			tab: "memory",
+			group: "Claude-mem",
+			label: "claude-mem Injection Token Limit",
+			description: "Approximate token cap for the memory block in the system prompt (0 = unlimited)",
+			condition: "claudeMemActive",
+		},
+	},
+	"claudeMem.requestTimeoutMs": { type: "number", default: 30_000 },
+	"claudeMem.workerStartTimeoutMs": { type: "number", default: 45_000 },
+	"claudeMem.firstTurnDeadlineMs": { type: "number", default: 8_000 },
+	"claudeMem.debug": { type: "boolean", default: false },
 
 	// TTSR
 	"ttsr.enabled": {

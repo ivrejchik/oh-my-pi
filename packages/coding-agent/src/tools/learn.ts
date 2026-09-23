@@ -23,7 +23,7 @@ export type LearnParams = typeof learnSchema.infer;
  * Orchestrating "learn" tool: persists a lesson to long-term memory and,
  * given a `skill` payload, mints/enhances a managed skill via the shared
  * `writeManagedSkill` primitive. Gated behind `autolearn.enabled` plus a live
- * memory backend — `hindsight`/`mnemopi` (remote/SQLite) or `local` (the
+ * memory backend — `hindsight`/`mnemopi`/`claude-mem` (remote/SQLite/worker) or `local` (the
  * file-based rollout backend, where lessons append to `learned.md`).
  */
 export class LearnTool implements AgentTool<typeof learnSchema> {
@@ -44,7 +44,8 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 	static createIf(session: ToolSession): LearnTool | null {
 		if (!session.settings.get("autolearn.enabled")) return null;
 		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "local") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "claude-mem" && backend !== "local")
+			return null;
 		return new LearnTool(session);
 	}
 
@@ -78,6 +79,17 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 			if (!id) {
 				throw new Error("Mnemopi did not store the lesson (no memory id returned).");
 			}
+		} else if (backend === "claude-mem") {
+			const state = this.session.getClaudeMemSessionState?.();
+			if (!state) {
+				throw new Error("claude-mem backend is not initialised for this session.");
+			}
+			const id = await state.saveMemory(params.memory, {
+				context: params.context,
+				source: "coding-agent-learn",
+				importance: 0.8,
+			});
+			memoryMessage = `Lesson stored as observation #${id}`;
 		} else if (backend === "local") {
 			const result = await localBackend.save?.(
 				{ agentDir: this.session.settings.getAgentDir(), cwd: this.session.settings.getCwd() },

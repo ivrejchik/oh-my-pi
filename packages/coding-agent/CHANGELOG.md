@@ -5,6 +5,7 @@
 ### Added
 
 - Added a Keenable web search provider (`keenable`). `KEENABLE_API_KEY` or `/login keenable` admits it to the auto chain after Exa; explicit selection via `providers.webSearchOrder` falls back to Keenable's keyless public endpoint. Maps `recency`, a single `site:` host, and `after:`/`before:` bounds onto Keenable's native `published_after`/`published_before`/`site` filters, retrying once without time filters when a filtered search is empty ([#12046](https://github.com/can1357/oh-my-pi/pull/12046) by [@ivrejchik](https://github.com/ivrejchik)).
+- Added `memory.backend: claude-mem`, a native backend for the claude-mem worker (Claude Code plugin daemon): startup context injection, ordered observation/summary ingest, first-turn recall, `recall`/`retain`/`reflect`/`memory_edit forget`, `memory://<id>` reads, and `/memory` stats/diagnose/queue.
 
 ## [18.1.21] - 2026-09-14
 

@@ -28,7 +28,7 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 
 	static createIf(session: ToolSession): MemoryRetainTool | null {
 		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "claude-mem") return null;
 		return new MemoryRetainTool(session);
 	}
 
@@ -63,6 +63,31 @@ export class MemoryRetainTool implements AgentTool<typeof memoryRetainSchema> {
 			return {
 				content: [{ type: "text", text: `${count} ${noun} stored.` }],
 				details: { count },
+			};
+		}
+
+		if (backend === "claude-mem") {
+			const state = this.session.getClaudeMemSessionState?.();
+			if (!state) {
+				throw new Error("claude-mem backend is not initialised for this session.");
+			}
+
+			const ids: number[] = [];
+			for (const item of params.items) {
+				ids.push(
+					await state.saveMemory(item.content, {
+						context: item.context,
+						source: "coding-agent-retain",
+						importance: 0.75,
+					}),
+				);
+			}
+
+			const count = ids.length;
+			const noun = count === 1 ? "memory" : "memories";
+			return {
+				content: [{ type: "text", text: `${count} ${noun} stored (ids: ${ids.map(id => `#${id}`).join(", ")}).` }],
+				details: { count, ids },
 			};
 		}
 

@@ -210,6 +210,9 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 		}
 		const id = await reserveStructuredSubagentId(options.session, { label: parsed.label });
 		const ownerId = options.session.getAgentId?.() ?? MAIN_AGENT_ID;
+		// Captured now, in the parent's tool call: the job body runs later, when
+		// the parent may be in a different (possibly private) turn.
+		const claudeMemDispatch = options.session.getClaudeMemSessionState?.()?.captureDispatch();
 		manager.register(
 			"task",
 			id,
@@ -230,6 +233,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						retainArtifacts: true,
 						keepAlive: true,
 						shareEvalSession: false,
+						claudeMemDispatch,
 						signal,
 						onProgress: progress => {
 							latestProgress = progress;

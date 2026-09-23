@@ -1,6 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { formatRecallForTool } from "../claude-mem/content";
 import { ensureBankExists } from "../hindsight/bank";
 import reflectDescription from "../prompts/tools/reflect.md" with { type: "text" };
 import type { ToolSession } from ".";
@@ -26,7 +27,7 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 
 	static createIf(session: ToolSession): MemoryReflectTool | null {
 		const backend = session.settings.get("memory.backend");
-		if (backend !== "hindsight" && backend !== "mnemopi") return null;
+		if (backend !== "hindsight" && backend !== "mnemopi" && backend !== "claude-mem") return null;
 		return new MemoryReflectTool(session);
 	}
 
@@ -57,6 +58,34 @@ export class MemoryReflectTool implements AgentTool<typeof memoryReflectSchema> 
 					};
 				} catch (err) {
 					logger.warn("reflect failed", { backend: "mnemopi", bank: state.config.bank, error: String(err) });
+					throw err instanceof Error ? err : new Error(String(err));
+				}
+			}
+
+			if (backend === "claude-mem") {
+				const state = this.session.getClaudeMemSessionState?.();
+				if (!state) {
+					throw new Error("claude-mem backend is not initialised for this session.");
+				}
+
+				try {
+					const query = params.context?.trim()
+						? `${params.query.trim()}\n\nAdditional context:\n${params.context.trim()}`
+						: params.query;
+					const results = await state.search(query, { limit: Math.max(state.config.recallLimit, 20), signal });
+					if (results.observations.length === 0 && results.sessions.length === 0) {
+						return {
+							content: [{ type: "text", text: "No relevant information found to reflect on." }],
+							details: {},
+						};
+					}
+					const summary = formatRecallForTool(results.observations, results.sessions);
+					return {
+						content: [{ type: "text", text: `Based on recalled observations:\n\n${summary}` }],
+						details: {},
+					};
+				} catch (err) {
+					logger.warn("reflect failed", { backend: "claude-mem", error: String(err) });
 					throw err instanceof Error ? err : new Error(String(err));
 				}
 			}

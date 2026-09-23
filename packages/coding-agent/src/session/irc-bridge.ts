@@ -1,5 +1,6 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { attachDispatchToMessage, type ClaudeMemSessionState, dispatchOfMessage } from "../claude-mem/state";
 import type { Settings } from "../config/settings";
 import { IrcBus, type IrcMessage } from "../irc/bus";
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
@@ -18,6 +19,7 @@ export interface IrcBridgeHost {
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	planModeEnabled(): boolean;
+	getClaudeMemSessionState?(): ClaudeMemSessionState | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
 	runEphemeralTurn(args: { promptText: string }): Promise<{ replyText: string }>;
@@ -128,6 +130,7 @@ export class IrcBridge {
 	/** Surfaces and consumes queued incoming records before automatic injection. */
 	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
 		const messages: IrcMessage[] = [];
+		const consumed: AgentMessage[] = [];
 		const remainingInterrupts: AgentMessage[] = [];
 		const remainingAsides: AgentMessage[] = [];
 		const queues = [
@@ -165,6 +168,7 @@ export class IrcBridge {
 					queue.remaining.push(record);
 					continue;
 				}
+				consumed.push(record);
 				messages.push({
 					id,
 					from,
@@ -177,6 +181,10 @@ export class IrcBridge {
 		}
 		this.#interrupts = remainingInterrupts;
 		this.#asides = remainingAsides;
+		// Read through the inbox tool, these records enter the running turn as a
+		// tool result; their senders' tokens fold into that turn's authorization.
+		if (consumed.length > 0)
+			this.#host.getClaudeMemSessionState?.()?.authorizeSteer(...consumed.map(dispatchOfMessage));
 		return messages;
 	}
 
@@ -214,9 +222,21 @@ export class IrcBridge {
 			timestamp: msg.ts,
 		};
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		// The sender's claude-mem turn authorization was attached to the message
+		// by the bus when `send` ran, inside the sender's turn. It moves onto the
+		// record here because the record may be deferred, parked, merged with
+		// others, or read through the inbox before it reaches a turn, and only
+		// the injection point knows which turn that is. A message that reached
+		// this session without going through the bus carries none and is
+		// unauthorized by design.
+		const dispatch = dispatchOfMessage(msg);
+		attachDispatchToMessage(record, dispatch);
+		const recipient = this.#host.getClaudeMemSessionState?.();
 		if (streaming) {
 			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
 			if (recipientParentId === msg.from) {
+				// Steered straight into the running turn, bypassing the aside queue.
+				recipient?.authorizeSteer(dispatch);
 				this.#host.agent.steer({
 					role: "user",
 					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
@@ -225,12 +245,15 @@ export class IrcBridge {
 					steering: true,
 				});
 			} else {
+				// Authorized when the aside provider injects it (session aside poll).
 				this.#interrupts.push(record);
 			}
 			if (autoReply) this.#startAutoReply(msg);
 			return "injected";
 		}
 		if (this.#host.planModeEnabled()) {
+			// Appended to context without a turn: the next turn inherits its say.
+			recipient?.authorizeNextTurn(dispatch);
 			this.#host.agent.appendMessage(record);
 			this.#host.sessionManager.appendCustomMessageEntry(
 				record.customType,
@@ -242,6 +265,7 @@ export class IrcBridge {
 			if (autoReply) this.#startAutoReply(msg);
 			return "injected";
 		}
+		// Authorized by `#wakeForIrc` once the wake wins prompt ownership.
 		this.#host.wakeForIrc([record]);
 		return "woken";
 	}
@@ -253,7 +277,11 @@ export class IrcBridge {
 
 	/** Persists queued IRC records that missed their step-boundary injection. */
 	flushPending(): void {
-		for (const record of this.drainPending()) {
+		const records = this.drainPending();
+		if (records.length === 0) return;
+		// Landing in context ahead of the next turn: their tokens weigh on it.
+		this.#host.getClaudeMemSessionState?.()?.authorizeNextTurn(...records.map(dispatchOfMessage));
+		for (const record of records) {
 			this.#host.agent.emitExternalEvent({ type: "message_start", message: record });
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
 		}

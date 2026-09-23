@@ -1,4 +1,5 @@
 import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { type ClaudeMemTurnAuthorization, combineTurnAuthorizations } from "../claude-mem/state";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import workpoolBatchTemplate from "../prompts/tools/workpool-batch.md" with { type: "text" };
 import workpoolTurnResultTemplate from "../prompts/tools/workpool-turn-result.md" with { type: "text" };
@@ -25,6 +26,8 @@ export interface WorkPoolItem {
 	agentId?: string;
 	batchId?: string;
 	status: "queued" | "running" | "completed" | "failed" | "cancelled";
+	/** Claude-mem authorization of the parent turn that pushed this item; folded per batch at dispatch. */
+	dispatch?: ClaudeMemTurnAuthorization;
 }
 
 /** Keep-alive subagent and its queued work within a pool. */
@@ -150,9 +153,12 @@ export class WorkPool {
 		if (this.closed) throw new ToolError(`workpool ${this.name} is closed`);
 		if (texts.length === 0) return [];
 		const queued: WorkPoolItem[] = [];
+		// Items are dispatched in later batches; the authorizing turn is the one
+		// pushing them now, not whichever turn the parent is in at dispatch.
+		const dispatch = this.session.getClaudeMemSessionState?.()?.captureDispatch();
 		for (const text of texts) {
 			const seq = this.#nextSeq++;
-			const item: WorkPoolItem = { id: `${this.name}#${seq}`, seq, text, status: "queued" };
+			const item: WorkPoolItem = { id: `${this.name}#${seq}`, seq, text, status: "queued", dispatch };
 			this.items.push(item);
 			queued.push(item);
 		}
@@ -355,6 +361,7 @@ export class WorkPool {
 			index: index + 1,
 		}));
 		const outputSchema = buildWorkPoolOutputSchema(workPoolYieldItems);
+		const claudeMemDispatch = combineTurnAuthorizations(batch.items.map(item => item.dispatch));
 		const jobId = manager.register(
 			"task",
 			batch.id,
@@ -385,6 +392,7 @@ export class WorkPool {
 							outputSchema,
 							schemaMode: "strict",
 							workPoolYieldItems,
+							claudeMemDispatch,
 							keepAlive: true,
 							retainArtifacts: true,
 							shareEvalSession: false,
@@ -402,6 +410,7 @@ export class WorkPool {
 							outputSchemaMode: "strict",
 							outputSchemaSource: "caller",
 							workPoolYieldItems,
+							claudeMemDispatch,
 							signal,
 							onProgress,
 							eventBus: this.session.eventBus,

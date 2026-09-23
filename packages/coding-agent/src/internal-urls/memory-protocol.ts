@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
+import { type ClaudeMemSessionState, getClaudeMemSessionState, parseClaudeMemMemoryRef } from "../claude-mem/state";
 import { getMemoryRoot } from "../memories";
 import { getMnemopiSessionState, type MnemopiScopedMemoryHit, type MnemopiSessionState } from "../mnemopi/state";
 import { AgentRegistry } from "../registry/agent-registry";
@@ -22,7 +23,7 @@ const MEMORY_NAMESPACE = "root";
  * error (issue #7587).
  */
 const HINDSIGHT_UNADDRESSABLE =
-	"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `reflect` to synthesize. `read memory://<id>` is only available with memory.backend=mnemopi.";
+	"Hindsight memories are not addressable via memory://. Recall results are final — use `recall` to search or `reflect` to synthesize. `read memory://<id>` is only available with memory.backend=mnemopi or claude-mem.";
 
 /**
  * Snapshot of memory roots for every registered session, deduped.
@@ -240,6 +241,25 @@ function mnemopiSessionStatesFromRegistry(): MnemopiSessionState[] {
 	return states;
 }
 
+/**
+ * Snapshot of live claude-mem session states, deduplicated by primary. All
+ * states in one process share the same worker, so the first primary answers
+ * any `memory://<id>` lookup.
+ */
+function claudeMemSessionStatesFromRegistry(): ClaudeMemSessionState[] {
+	const seen = new Set<ClaudeMemSessionState>();
+	const states: ClaudeMemSessionState[] = [];
+	for (const ref of AgentRegistry.global().list()) {
+		const state = getClaudeMemSessionState(ref.session ?? undefined);
+		if (!state) continue;
+		const primary = state.aliasOf ?? state;
+		if (seen.has(primary)) continue;
+		seen.add(primary);
+		states.push(primary);
+	}
+	return states;
+}
+
 function memoryBackendFromContext(context?: ResolveContext): string | undefined {
 	if (!context?.settings || typeof context.settings !== "object") return undefined;
 	try {
@@ -313,9 +333,18 @@ function callerMnemopiState(session: AgentSession): MnemopiSessionState | undefi
 	return state?.aliasOf ?? state;
 }
 
+/**
+ * Canonical claude-mem state of one session; subagents alias their parent's
+ * state, which owns the worker session.
+ */
+function callerClaudeMemState(session: AgentSession): ClaudeMemSessionState | undefined {
+	const state = getClaudeMemSessionState(session);
+	return state?.aliasOf ?? state;
+}
+
 function unknownNamespaceError(namespace: string): Error {
 	return new Error(
-		`Unknown memory namespace: ${namespace}. Supported: ${MEMORY_NAMESPACE} (file-backed memory summary), or a mnemopi memory id when memory.backend=mnemopi is active.`,
+		`Unknown memory namespace: ${namespace}. Supported: ${MEMORY_NAMESPACE} (file-backed memory summary), a mnemopi memory id when memory.backend=mnemopi is active, or a claude-mem observation id (memory://1234) / session summary (memory://S12) when memory.backend=claude-mem is active.`,
 	);
 }
 
@@ -365,6 +394,34 @@ function renderMnemopiMemory(url: InternalUrl, hit: MnemopiScopedMemoryHit): Int
 }
 
 /**
+ * Render a claude-mem observation or session summary as text/markdown. Rows
+ * live in the shared worker, so any primary state can answer.
+ */
+async function renderClaudeMemMemory(
+	url: InternalUrl,
+	state: ClaudeMemSessionState,
+	namespace: string,
+): Promise<InternalResource> {
+	const ref = parseClaudeMemMemoryRef(namespace);
+	if (!ref) {
+		throw new Error(
+			"claude-mem memory ids are numeric observation ids (memory://1234) or session summaries (memory://S12).",
+		);
+	}
+	const content = await state.readMemory(ref);
+	if (content === null) {
+		throw new Error(`claude-mem ${ref.kind} ${namespace} not found. Use \`recall\` to list available ids.`);
+	}
+	return {
+		url: url.href,
+		content,
+		contentType: "text/markdown",
+		size: Buffer.byteLength(content, "utf-8"),
+		notes: [],
+	};
+}
+
+/**
  * Protocol handler for memory:// URLs.
  * Binds the URL to the session that issued it: the caller's own memory
  * backend decides how `memory://<id>` is answered, and its cwd decides which
@@ -386,11 +443,12 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 			throw new Error("memory:// URL requires a namespace: memory://root or memory://<memory-id>");
 		}
 
-		// Mnemopi rows live in SQLite banks per session, keyed by memory id.
-		// Any host other than the file-backed `root` namespace is treated as a
-		// mnemopi memory id lookup. This is the read counterpart to
-		// `memory_edit update` and lets agents inspect the full content of a
-		// clipped recall preview before overwriting it (issue #4443).
+		// Mnemopi rows live in SQLite banks per session, keyed by memory id;
+		// claude-mem rows live in the shared worker, keyed by observation or
+		// session-summary id. Any host other than the file-backed `root`
+		// namespace is treated as a backend memory id lookup. This is the read
+		// counterpart to `memory_edit update` and lets agents inspect the full
+		// content of a clipped recall preview before overwriting it (issue #4443).
 		if (namespace !== MEMORY_NAMESPACE) {
 			if (!caller.legacy) {
 				if (backend === "hindsight") throw new Error(HINDSIGHT_UNADDRESSABLE);
@@ -400,6 +458,11 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 					throw new Error(
 						`Mnemopi memory ${namespace} not found in the calling session's scoped bank. Use \`recall\` to list available ids.`,
 					);
+				}
+				if (backend === "claude-mem") {
+					const state = caller.session ? callerClaudeMemState(caller.session) : undefined;
+					if (!state) throw new Error("claude-mem backend is not initialised for the calling session.");
+					return await renderClaudeMemMemory(url, state, namespace);
 				}
 				throw unknownNamespaceError(namespace);
 			}
@@ -415,6 +478,8 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 				throw new Error(HINDSIGHT_UNADDRESSABLE);
 			}
 			if (mnemopiStates.length === 0) {
+				const claudeMemState = claudeMemSessionStatesFromRegistry()[0];
+				if (claudeMemState) return await renderClaudeMemMemory(url, claudeMemState, namespace);
 				throw unknownNamespaceError(namespace);
 			}
 			const hit = tryResolveMnemopiMemory(namespace);
@@ -469,6 +534,17 @@ export class MemoryProtocolHandler implements ProtocolHandler {
 			completions.push({
 				value: "<memory-id>",
 				description: "Full mnemopi memory by id (from recall)",
+			});
+		}
+		const claudeMemAvailable = caller.legacy
+			? claudeMemSessionStatesFromRegistry().length > 0
+			: caller.backend === "claude-mem" &&
+				caller.session !== undefined &&
+				callerClaudeMemState(caller.session) !== undefined;
+		if (claudeMemAvailable) {
+			completions.push({
+				value: "<observation-id>",
+				description: "Full claude-mem observation (memory://1234) or session summary (memory://S12) from recall",
 			});
 		}
 		return completions;

@@ -1,3 +1,5 @@
+export type { ClaudeMemConfig } from "../claude-mem/config";
+export type { ClaudeMemMemoryRef, ClaudeMemSessionState, ClaudeMemSessionStateOptions } from "../claude-mem/state";
 export type { MnemopiBackendConfig, MnemopiLlmMode, MnemopiProviderOptions, MnemopiScoping } from "../mnemopi/config";
 export type {
 	MnemopiMemoryEditOperation,

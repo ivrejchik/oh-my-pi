@@ -126,6 +126,13 @@ const CONDITIONS: Record<string, () => boolean> = {
 			return false;
 		}
 	},
+	claudeMemActive: () => {
+		try {
+			return Settings.instance.get("memory.backend") === "claude-mem";
+		} catch {
+			return false;
+		}
+	},
 	autolearnActive: () => {
 		try {
 			return Settings.instance.get("autolearn.enabled") === true;

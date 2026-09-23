@@ -9,11 +9,12 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
+import type { ClaudeMemSessionState, ClaudeMemTurnAuthorization } from "../claude-mem/state";
 import type { HindsightSessionState } from "../hindsight/state";
 import type { MnemopiSessionState } from "../mnemopi/state";
 import type { AgentSession } from "../session/agent-session";
 
-export type MemoryBackendId = "off" | "local" | "hindsight" | "mnemopi" | "sharpshooter";
+export type MemoryBackendId = "off" | "local" | "hindsight" | "mnemopi" | "sharpshooter" | "claude-mem";
 
 export interface MemoryBackendStatus {
 	backend: MemoryBackendId;
@@ -90,6 +91,9 @@ export interface MemoryBackendStartOptions {
 	taskDepth: number;
 	parentHindsightSessionState?: HindsightSessionState;
 	parentMnemopiSessionState?: MnemopiSessionState;
+	parentClaudeMemSessionState?: ClaudeMemSessionState;
+	/** Authorization captured by the dispatch that spawned this subagent; consumed by its first turn. */
+	parentClaudeMemDispatch?: ClaudeMemTurnAuthorization;
 }
 
 export interface MemoryBackend {

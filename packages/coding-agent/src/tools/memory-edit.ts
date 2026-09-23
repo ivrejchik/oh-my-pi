@@ -1,5 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { parseClaudeMemMemoryRef } from "../claude-mem/state";
 import memoryEditDescription from "../prompts/tools/memory-edit.md" with { type: "text" };
 import type { ToolSession } from ".";
 
@@ -21,17 +22,21 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 	readonly parameters = memoryEditSchema;
 	readonly strict = true;
 	readonly loadMode = "discoverable";
-	readonly summary = "Update, forget, or invalidate Mnemopi memories";
+	readonly summary = "Update, forget, or invalidate long-term memories";
 
 	constructor(private readonly session: ToolSession) {}
 
 	static createIf(session: ToolSession): MemoryEditTool | null {
 		const backend = session.settings.get("memory.backend");
-		if (backend !== "mnemopi") return null;
+		if (backend !== "mnemopi" && backend !== "claude-mem") return null;
 		return new MemoryEditTool(session);
 	}
 
 	async execute(_id: string, params: MemoryEditParams): Promise<AgentToolResult> {
+		if (this.session.settings.get("memory.backend") === "claude-mem") {
+			return this.executeClaudeMem(params);
+		}
+
 		const state = this.session.getMnemopiSessionState?.();
 		if (!state) {
 			throw new Error("Mnemopi backend is not initialised for this session.");
@@ -56,6 +61,47 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 		return {
 			content: [{ type: "text", text }],
 			details: result,
+		};
+	}
+
+	private async executeClaudeMem(params: MemoryEditParams): Promise<AgentToolResult> {
+		const state = this.session.getClaudeMemSessionState?.();
+		if (!state) {
+			throw new Error("claude-mem backend is not initialised for this session.");
+		}
+		if (params.op !== "forget") {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "claude-mem supports only `forget`; observations cannot be updated or invalidated in place. Retain a corrected note instead.",
+					},
+				],
+				isError: true,
+				details: { status: "unsupported" },
+			};
+		}
+		const ref = parseClaudeMemMemoryRef(params.id);
+		if (!ref) {
+			return {
+				content: [
+					{ type: "text", text: `Memory id ${params.id} is not a claude-mem id; use an id returned by recall.` },
+				],
+				isError: true,
+				details: { status: "invalid_id" },
+			};
+		}
+		if (ref.kind === "session") {
+			return {
+				content: [{ type: "text", text: "Session summaries cannot be deleted." }],
+				isError: true,
+				details: { status: "unsupported" },
+			};
+		}
+		const ok = await state.forget(ref.id);
+		return {
+			content: [{ type: "text", text: ok ? `Memory #${ref.id} forgotten.` : `Memory #${ref.id} was not found.` }],
+			details: { status: ok ? "forgotten" : "not_found" },
 		};
 	}
 }
