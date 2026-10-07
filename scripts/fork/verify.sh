@@ -15,13 +15,13 @@ echo "Verifying fork changes since $base"
 
 (cd packages/coding-agent && bun run check:types)
 
-mapfile -t tests < <(git diff --name-only --diff-filter=d "$base" HEAD -- 'packages/*/test/**.test.ts')
-if [ "${#tests[@]}" -eq 0 ]; then
+tests="$(git diff --name-only --diff-filter=d "$base" HEAD -- 'packages/*/test/**.test.ts')"
+if [ -z "$tests" ]; then
 	echo "No fork-changed tests"
 else
-	for pkg in $(printf '%s\n' "${tests[@]}" | cut -d/ -f2 | sort -u); do
-		mapfile -t pkg_tests < <(printf '%s\n' "${tests[@]}" | grep "^packages/$pkg/" | sed "s#^packages/$pkg/##")
-		(cd "packages/$pkg" && bun test "${pkg_tests[@]}")
+	for pkg in $(echo "$tests" | cut -d/ -f2 | sort -u); do
+		# shellcheck disable=SC2046 # test paths contain no whitespace
+		(cd "packages/$pkg" && bun test $(echo "$tests" | grep "^packages/$pkg/" | sed "s#^packages/$pkg/##"))
 	done
 fi
 

@@ -29,7 +29,8 @@ sentinel="__piNativesV${version//[^A-Za-z0-9]/_}"
 if ! grep -qaw "$sentinel" "$native_dir"/pi_natives."$platform"*.node 2>/dev/null; then
 	tmp="$(mktemp -d)"
 	trap 'rm -rf "$tmp"' EXIT
-	(cd "$tmp" && npm pack --silent "@oh-my-pi/pi-natives-${platform}@${version}" >/dev/null && tar -xzf ./*.tgz)
+	leaf="pi-natives-${platform}"
+	curl -fsSL "https://registry.npmjs.org/@oh-my-pi/${leaf}/-/${leaf}-${version}.tgz" | tar -xzf - -C "$tmp"
 	rm -f "$native_dir"/pi_natives."$platform"*.node
 	cp "$tmp"/package/*.node "$native_dir"/
 	echo "Installed prebuilt natives ${platform}@${version}"
