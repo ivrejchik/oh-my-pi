@@ -1,14 +1,12 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { logger, prompt } from "@oh-my-pi/pi-utils";
+import { prompt } from "@oh-my-pi/pi-utils";
 import { attachDispatchToMessage, type ClaudeMemSessionState, dispatchOfMessage } from "../claude-mem/state";
-import type { Settings } from "../config/settings";
-import { IrcBus } from "../irc/bus";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
+import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import parentIrcSteerTemplate from "../prompts/steering/parent-irc.md" with { type: "text" };
-import ircAutoReplyTemplate from "../prompts/system/irc-autoreply.md" with { type: "text" };
 import ircIncomingTemplate from "../prompts/system/irc-incoming.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "./agent-session-events";
+import { escapeHarnessTags } from "./harness-tags";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -16,17 +14,15 @@ import type { SessionManager } from "./session-manager";
 export interface IrcBridgeHost {
 	agent: Agent;
 	sessionManager: SessionManager;
-	settings: Settings;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	planModeEnabled(): boolean;
 	getClaudeMemSessionState?(): ClaudeMemSessionState | undefined;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
-	runEphemeralTurn(args: { promptText: string }): Promise<{ replyText: string }>;
 }
 
-/** Owns incoming IRC queues, the session's non-interrupting aside queue, injection, and side-channel auto-replies. */
+/** Owns incoming IRC queues and the session's non-interrupting aside queue. */
 export class IrcBridge {
 	readonly #host: IrcBridgeHost;
 	#interrupts: AgentMessage[] = [];
@@ -35,7 +31,7 @@ export class IrcBridge {
 	 *  Pooled turns must not flush these (no observer would reply to the sender);
 	 *  they resume into a monitored wake once the contract clears. */
 	#deferredWakes: AgentMessage[] = [];
-	/** In-flight replies owed to peers: side-channel auto-replies and wake-turn relays. */
+	/** In-flight wake-turn relays owed to peers. */
 	readonly #pendingReplies = new Set<Promise<void>>();
 
 	constructor(host: IrcBridgeHost) {
@@ -52,12 +48,7 @@ export class IrcBridge {
 		return this.#interrupts.length > 0 || this.#asides.length > 0 || this.#deferredWakes.length > 0;
 	}
 
-	/**
-	 * Waits until every reply this session still owes a peer has settled. A
-	 * peer awaiting an answer (`send await:true`) holds its "stopped without
-	 * replying" verdict on this, so a reply produced after the terminal
-	 * `agent_end` still resolves the waiter.
-	 */
+	/** Waits until every in-flight wake-turn relay has settled. */
 	async waitForReplies(): Promise<void> {
 		while (this.#pendingReplies.size > 0) {
 			await Promise.all(this.#pendingReplies);
@@ -190,24 +181,27 @@ export class IrcBridge {
 	}
 
 	/** Delivers an IRC message into the recipient session without awaiting any wake turn. */
-	async deliver(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
+	async deliver(msg: IrcMessage): Promise<"injected" | "woken"> {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
 		const streaming = this.#host.isStreaming();
 		const planModeIdle = !streaming && this.#host.planModeEnabled();
-		const autoReply =
-			(opts?.expectsReply ?? false) && ((streaming && !this.#host.settings.get("async.enabled")) || planModeIdle);
+		const fromParent = AgentRegistry.global().get(msg.to)?.parentId === msg.from;
 		// An idle subagent runs a monitored wake turn whose output is relayed
 		// back to the sender (task executor `relayWakeTurnOutput`); the main
 		// agent and mid-turn asides have no such relay.
 		const relayOnStop = !streaming && !planModeIdle && msg.to !== MAIN_AGENT_ID && msg.wakeRelay !== true;
+		// The body is agent-authored (a peer's message, or a wake relay's
+		// `<task-result>` around a subagent's output), so it must not close the
+		// harness envelope it is rendered into or open a forged one, e.g. a parent
+		// steer. `details.message` keeps the raw body for the transcript card and inbox.
+		const envelopeBody = escapeHarnessTags(msg.body);
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
-				message: msg.body,
+				message: envelopeBody,
 				replyTo: msg.replyTo ?? "",
-				autoReplied: autoReply,
 				interrupting: streaming,
 				relayOnStop,
 			}),
@@ -218,6 +212,7 @@ export class IrcBridge {
 				message: msg.body,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
+				...(fromParent ? { fromParent: true } : {}),
 			},
 			attribution: "agent",
 			timestamp: msg.ts,
@@ -234,13 +229,12 @@ export class IrcBridge {
 		attachDispatchToMessage(record, dispatch);
 		const recipient = this.#host.getClaudeMemSessionState?.();
 		if (streaming) {
-			const recipientParentId = AgentRegistry.global().get(msg.to)?.parentId;
-			if (recipientParentId === msg.from) {
+			if (fromParent) {
 				// Steered straight into the running turn, bypassing the aside queue.
 				recipient?.authorizeSteer(dispatch);
 				this.#host.agent.steer({
 					role: "user",
-					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: msg.body }),
+					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: envelopeBody }),
 					attribution: "agent",
 					timestamp: msg.ts,
 					steering: true,
@@ -249,7 +243,6 @@ export class IrcBridge {
 				// Authorized when the aside provider injects it (session aside poll).
 				this.#interrupts.push(record);
 			}
-			if (autoReply) this.#startAutoReply(msg);
 			return "injected";
 		}
 		if (this.#host.planModeEnabled()) {
@@ -263,7 +256,6 @@ export class IrcBridge {
 				record.details,
 				record.attribution ?? "agent",
 			);
-			if (autoReply) this.#startAutoReply(msg);
 			return "injected";
 		}
 		// Authorized by `#wakeForIrc` once the wake wins prompt ownership.
@@ -285,41 +277,6 @@ export class IrcBridge {
 		for (const record of records) {
 			this.#host.agent.emitExternalEvent({ type: "message_start", message: record });
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
-		}
-	}
-
-	#startAutoReply(msg: IrcMessage): void {
-		this.trackReply(this.#runAutoReply(msg));
-	}
-
-	async #runAutoReply(msg: IrcMessage): Promise<void> {
-		try {
-			const { replyText } = await this.#host.runEphemeralTurn({
-				promptText: prompt.render(ircAutoReplyTemplate, {
-					from: msg.from,
-					message: msg.body,
-					replyTo: msg.replyTo ?? "",
-				}),
-			});
-			const body = replyText.trim();
-			if (!body || this.#host.isDisposed()) return;
-			const record: CustomMessage = {
-				role: "custom",
-				customType: "irc:autoreply",
-				content: `[IRC you → \`${msg.from}\` (auto)]\n\n${body}`,
-				display: true,
-				details: { to: msg.from, body, replyTo: msg.id },
-				attribution: "agent",
-				timestamp: Date.now(),
-			};
-			void this.#host.emitSessionEvent({ type: "irc_message", message: record });
-			this.#asides.push(record);
-			const receipt = await IrcBus.global().send({ from: msg.to, to: msg.from, body, replyTo: msg.id });
-			if (receipt.outcome === "failed") {
-				logger.warn("IRC auto-reply delivery failed", { to: msg.from, error: receipt.error });
-			}
-		} catch (error) {
-			logger.warn("IRC auto-reply turn failed", { from: msg.from, error: String(error) });
 		}
 	}
 }

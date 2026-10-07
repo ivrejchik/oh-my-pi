@@ -11,6 +11,26 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Settings } from "../config/settings";
+import {
+	cfgClaudeMemAutoContext,
+	cfgClaudeMemAutoObserve,
+	cfgClaudeMemAutoRecall,
+	cfgClaudeMemAutoStartWorker,
+	cfgClaudeMemAutoSummarize,
+	cfgClaudeMemDataDir,
+	cfgClaudeMemDebug,
+	cfgClaudeMemFirstTurnDeadlineMs,
+	cfgClaudeMemInjectionTokenLimit,
+	cfgClaudeMemObserveSubagents,
+	cfgClaudeMemPlatformSource,
+	cfgClaudeMemPluginRoot,
+	cfgClaudeMemRecallContextTurns,
+	cfgClaudeMemRecallLimit,
+	cfgClaudeMemRecallMaxQueryChars,
+	cfgClaudeMemRequestTimeoutMs,
+	cfgClaudeMemWorkerStartTimeoutMs,
+	cfgClaudeMemWorkerUrl,
+} from "./settings";
 
 export const CLAUDE_MEM_BACKEND_ID = "claude-mem" as const;
 
@@ -157,15 +177,15 @@ export function pluginVersionFromRoot(pluginRoot: string | undefined): string | 
 
 export function loadClaudeMemConfig(settings: Settings, env: NodeJS.ProcessEnv = process.env): ClaudeMemConfig {
 	const dataDir = expandHome(
-		envString(env.CLAUDE_MEM_DATA_DIR) ?? settings.get("claudeMem.dataDir")?.trim() ?? defaultClaudeMemDataDir(env),
+		envString(env.CLAUDE_MEM_DATA_DIR) ?? cfgClaudeMemDataDir.get(settings)?.trim() ?? defaultClaudeMemDataDir(env),
 	);
 	const plugin = readPluginSettings(dataDir);
 	const pluginRoot = resolveClaudeMemPluginRoot(
-		envString(env.CLAUDE_PLUGIN_ROOT) ?? settings.get("claudeMem.pluginRoot")?.trim() ?? undefined,
+		envString(env.CLAUDE_PLUGIN_ROOT) ?? cfgClaudeMemPluginRoot.get(settings)?.trim() ?? undefined,
 		claudeConfigDir(env),
 	);
 
-	const explicitUrl = envString(env.CLAUDE_MEM_WORKER_URL) ?? settings.get("claudeMem.workerUrl")?.trim();
+	const explicitUrl = envString(env.CLAUDE_MEM_WORKER_URL) ?? cfgClaudeMemWorkerUrl.get(settings)?.trim();
 	let workerUrl: string;
 	if (explicitUrl) {
 		workerUrl = explicitUrl.replace(/\/+$/, "");
@@ -180,40 +200,40 @@ export function loadClaudeMemConfig(settings: Settings, env: NodeJS.ProcessEnv =
 		pluginRoot,
 		workerUrl,
 		platformSource:
-			envString(env.CLAUDE_MEM_PLATFORM_SOURCE) ?? settings.get("claudeMem.platformSource")?.trim() ?? "claude",
-		autoStartWorker: envBool(env.CLAUDE_MEM_AUTO_START_WORKER) ?? settings.get("claudeMem.autoStartWorker"),
-		autoContext: envBool(env.CLAUDE_MEM_AUTO_CONTEXT) ?? settings.get("claudeMem.autoContext"),
-		autoRecall: envBool(env.CLAUDE_MEM_AUTO_RECALL) ?? settings.get("claudeMem.autoRecall"),
-		autoObserve: envBool(env.CLAUDE_MEM_AUTO_OBSERVE) ?? settings.get("claudeMem.autoObserve"),
-		observeSubagents: envBool(env.CLAUDE_MEM_OBSERVE_SUBAGENTS) ?? settings.get("claudeMem.observeSubagents"),
-		autoSummarize: envBool(env.CLAUDE_MEM_AUTO_SUMMARIZE) ?? settings.get("claudeMem.autoSummarize"),
-		recallLimit: Math.max(1, envInt(env.CLAUDE_MEM_RECALL_LIMIT) ?? settings.get("claudeMem.recallLimit")),
+			envString(env.CLAUDE_MEM_PLATFORM_SOURCE) ?? cfgClaudeMemPlatformSource.get(settings)?.trim() ?? "claude",
+		autoStartWorker: envBool(env.CLAUDE_MEM_AUTO_START_WORKER) ?? cfgClaudeMemAutoStartWorker.get(settings),
+		autoContext: envBool(env.CLAUDE_MEM_AUTO_CONTEXT) ?? cfgClaudeMemAutoContext.get(settings),
+		autoRecall: envBool(env.CLAUDE_MEM_AUTO_RECALL) ?? cfgClaudeMemAutoRecall.get(settings),
+		autoObserve: envBool(env.CLAUDE_MEM_AUTO_OBSERVE) ?? cfgClaudeMemAutoObserve.get(settings),
+		observeSubagents: envBool(env.CLAUDE_MEM_OBSERVE_SUBAGENTS) ?? cfgClaudeMemObserveSubagents.get(settings),
+		autoSummarize: envBool(env.CLAUDE_MEM_AUTO_SUMMARIZE) ?? cfgClaudeMemAutoSummarize.get(settings),
+		recallLimit: Math.max(1, envInt(env.CLAUDE_MEM_RECALL_LIMIT) ?? cfgClaudeMemRecallLimit.get(settings)),
 		recallContextTurns: Math.max(
 			1,
-			envInt(env.CLAUDE_MEM_RECALL_CONTEXT_TURNS) ?? settings.get("claudeMem.recallContextTurns"),
+			envInt(env.CLAUDE_MEM_RECALL_CONTEXT_TURNS) ?? cfgClaudeMemRecallContextTurns.get(settings),
 		),
 		recallMaxQueryChars: Math.max(
 			0,
-			envInt(env.CLAUDE_MEM_RECALL_MAX_QUERY_CHARS) ?? settings.get("claudeMem.recallMaxQueryChars"),
+			envInt(env.CLAUDE_MEM_RECALL_MAX_QUERY_CHARS) ?? cfgClaudeMemRecallMaxQueryChars.get(settings),
 		),
 		injectionTokenLimit: Math.max(
 			0,
-			envInt(env.CLAUDE_MEM_INJECTION_TOKEN_LIMIT) ?? settings.get("claudeMem.injectionTokenLimit"),
+			envInt(env.CLAUDE_MEM_INJECTION_TOKEN_LIMIT) ?? cfgClaudeMemInjectionTokenLimit.get(settings),
 		),
 		requestTimeoutMs: Math.max(
 			1_000,
 			envInt(env.CLAUDE_MEM_API_TIMEOUT_MS) ??
 				envInt(plugin.CLAUDE_MEM_API_TIMEOUT_MS) ??
-				settings.get("claudeMem.requestTimeoutMs"),
+				cfgClaudeMemRequestTimeoutMs.get(settings),
 		),
 		workerStartTimeoutMs: Math.max(
 			1_000,
-			envInt(env.CLAUDE_MEM_WORKER_START_TIMEOUT_MS) ?? settings.get("claudeMem.workerStartTimeoutMs"),
+			envInt(env.CLAUDE_MEM_WORKER_START_TIMEOUT_MS) ?? cfgClaudeMemWorkerStartTimeoutMs.get(settings),
 		),
 		firstTurnDeadlineMs: Math.max(
 			0,
-			envInt(env.CLAUDE_MEM_FIRST_TURN_DEADLINE_MS) ?? settings.get("claudeMem.firstTurnDeadlineMs"),
+			envInt(env.CLAUDE_MEM_FIRST_TURN_DEADLINE_MS) ?? cfgClaudeMemFirstTurnDeadlineMs.get(settings),
 		),
-		debug: envBool(env.CLAUDE_MEM_DEBUG) ?? settings.get("claudeMem.debug"),
+		debug: envBool(env.CLAUDE_MEM_DEBUG) ?? cfgClaudeMemDebug.get(settings),
 	};
 }

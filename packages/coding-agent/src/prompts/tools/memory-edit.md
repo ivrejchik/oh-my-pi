@@ -1,4 +1,4 @@
-Edit long-term memories by id. Only ids returned by `recall`.
+Edit long-term memories by id. Only ids returned by `{{toolRefs.recall}}`.
 
 With the claude-mem backend only `forget` is available.
 
@@ -7,7 +7,7 @@ Operations:
 - `forget`: permanently delete working memory.
 - `invalidate`: softly supersede working or episodic memory; optional `replacement_id`.
 
-Fact ids — `recall` results marked `[facts]`: read-only. Inspect with `read memory://<id>`; any edit op → `not_editable`.
+Fact ids — `{{toolRefs.recall}}` results marked `[facts]`: read-only. Inspect with `read memory://<id>`; any edit op → `not_editable`.
 
 Prefer `invalidate` for stale memory whose history may still be useful. Use `forget` only for content requiring hard deletion.
 

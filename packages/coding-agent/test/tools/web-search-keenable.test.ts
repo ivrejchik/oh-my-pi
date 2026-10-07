@@ -31,19 +31,18 @@ afterAll(() => {
 
 function makeAuthStorage(apiKey: string | undefined): AuthStorage {
 	return {
-		async getApiKey() {
-			return apiKey;
-		},
-		hasAuth(provider: string) {
-			return provider === "keenable" && Boolean(apiKey);
-		},
-		resolver(provider: string, options?: { sessionId?: string }) {
-			expect(provider).toBe("keenable");
-			expect(options?.sessionId).toBe("session-keenable-test");
-			return async () => apiKey;
-		},
-		async rotateSessionCredential() {
-			return false;
+		keys: {
+			async get() {
+				return apiKey;
+			},
+			resolver(provider: string, options?: { sessionId?: string }) {
+				expect(provider).toBe("keenable");
+				expect(options?.sessionId).toBe("session-keenable-test");
+				return async () => apiKey;
+			},
+			source(provider: string) {
+				return provider === "keenable" && apiKey ? { kind: "stored", concrete: true } : undefined;
+			},
 		},
 	} as unknown as AuthStorage;
 }

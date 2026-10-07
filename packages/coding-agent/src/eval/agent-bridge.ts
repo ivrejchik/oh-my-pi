@@ -229,7 +229,6 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 						...(customTools ? { customTools } : {}),
 						retainArtifacts: true,
 						keepAlive: true,
-						shareEvalSession: false,
 						claudeMemDispatch,
 						signal,
 						onProgress: progress => {

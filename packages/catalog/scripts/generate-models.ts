@@ -23,6 +23,7 @@ import { providerEntries, providerEntry, seedModels } from "../src/compat/provid
 import type { CompiledProvider } from "../src/compat/types";
 import { ANTIGRAVITY_PRIMARY_ENDPOINT, fetchAntigravityDiscoveryModels } from "../src/discovery/antigravity";
 import { createModelManager } from "../src/model-manager";
+import { resolveModelTokenizer } from "../src/model-tokenizer";
 import prevModelsJson from "../src/models.json" with { type: "json" };
 import { toModelSpec } from "../src/provider-models/bundled-references";
 import {
@@ -34,7 +35,6 @@ import {
 import { PROVIDER_DESCRIPTORS } from "../src/provider-models/descriptors";
 import { filterModelsDevCatalogRows } from "../src/provider-models/models-dev-policies";
 import {
-	applyXaiCatalogPricing,
 	buildFireworksFastSeed,
 	buildXaiOAuthStaticSeed,
 	clampFireworksKimiMaxTokens,
@@ -53,10 +53,10 @@ import type { Api, Model, ModelSpec } from "../src/types";
 import { cleanModelName } from "../src/utils";
 import { mergeCopilotApiHeaders } from "../src/wire/github-copilot";
 import {
-	applyAntigravityPricingFallback,
 	applyCanonicalLimitFallback,
 	applyGeneratedModelPolicies,
 	applyOllamaCloudOutputCap,
+	applyPricingPeerFallback,
 	hasBillableCost,
 	linkOpenAIPromotionTargets,
 } from "./generated-policies";
@@ -91,6 +91,7 @@ const CREDENTIAL_SCOPED_PROVIDERS = new Set(["devin"]);
  * - `always`: every regen (same-id upstream/discovery rows still win dedup).
  * - `fallback`: only when the provider's authoritative discovery did not succeed.
  * - `empty`: only when no other source produced a row for the provider.
+ * - `never`: runtime-only rows the provider's model manager serves itself.
  *
  * xai-oauth projects curated chat rows into Responses specs while preserving
  * runner seed transports. The bundle carries both so configured roles resolve
@@ -103,6 +104,7 @@ function bundledSeedRows(
 ): readonly ModelSpec[] {
 	switch (entry.seed?.bundle) {
 		case undefined:
+		case "never":
 			return [];
 		case "fallback":
 			if (authoritativeProviders.has(entry.id)) return [];
@@ -170,16 +172,16 @@ async function resolveProviderApiKey(providerId: string, catalog: CatalogDiscove
 	try {
 		const authStorage = await discoverAuthStorage();
 		try {
-			const storedApiKey = await authStorage.getApiKey(providerId);
+			const storedApiKey = await authStorage.keys.get(providerId);
 			if (storedApiKey) {
 				return storedApiKey;
 			}
 			if (catalog.oauthProvider) {
-				// AuthStorage.getApiKey refreshes through the broker-aware
+				// AuthStorage.keys.get refreshes through the broker-aware
 				// single-flighted machinery, so a build-time invocation no
 				// longer silently falls back to bundled models when an
 				// expired-but-refreshable OAuth credential is on disk.
-				const oauthKey = await authStorage.getApiKey(catalog.oauthProvider);
+				const oauthKey = await authStorage.keys.get(catalog.oauthProvider);
 				if (oauthKey) {
 					return oauthKey;
 				}
@@ -459,9 +461,9 @@ async function getOAuthAccessFromStorage(provider: OAuthProvider): Promise<OAuth
 			// expired-but-refreshable credential gets rotated before discovery,
 			// and identity metadata (accountId/projectId/email) flows through
 			// for Codex/Antigravity downstream calls.
-			let access = await authStorage.getOAuthAccess(provider);
+			let access = await authStorage.oauth.access(provider);
 			if (!access && provider === "google-antigravity") {
-				access = await authStorage.getOAuthAccess("google-gemini-cli");
+				access = await authStorage.oauth.access("google-gemini-cli");
 			}
 			return access ?? null;
 		} finally {
@@ -521,7 +523,7 @@ async function fetchCodexDiscoveryModels(): Promise<ModelSpec<"openai-codex-resp
 	try {
 		const authStorage = await discoverAuthStorage();
 		try {
-			const accesses = await authStorage.getOAuthAccesses("openai-codex");
+			const accesses = await authStorage.oauth.accessAll("openai-codex");
 			for (const access of accesses) {
 				if (!access.ok) {
 					console.warn(`Codex account failed to resolve (${access.error}), keeping previous models.`);
@@ -671,9 +673,8 @@ async function generateModels() {
 	}
 	allModels = applyUmansPricingFallback(allModels, modelsDevModels);
 	allModels = applyPremiumMultiplierOverrides(allModels);
-	allModels = applyXaiCatalogPricing(allModels);
 	allModels = applyCodexPricingFallback(allModels);
-	allModels = applyAntigravityPricingFallback(allModels);
+	allModels = applyPricingPeerFallback(allModels);
 	allModels = applyKimiMaxTokensCap(allModels);
 	allModels = applyFireworksDeepSeekReasoningShape(allModels);
 	allModels = filterModelsDevCatalogRows(allModels);
@@ -733,7 +734,7 @@ async function generateModels() {
 	const MODELS: Record<string, Record<string, Model<Api>>> = {};
 	for (const [provider, models] of Object.entries(modelSpecs)) {
 		MODELS[provider] = Object.fromEntries(
-			Object.entries(sortObj(models)).map(([id, model]) => [id, buildModel(model)]),
+			Object.entries(sortObj(models)).map(([id, model]) => [id, buildGeneratedModel(model)]),
 		);
 	}
 
@@ -770,6 +771,23 @@ function canonicalizeModelCompat(model: ModelSpec<Api>): void {
 	if (!hasKeys) {
 		delete model.compat;
 	}
+}
+
+/**
+ * Materialize one bundled row. Prompt-cache lifetimes are rule-owned output,
+ * not snapshot input: stale lifetimes and configuration provenance from a
+ * previous snapshot (or a copied reference row) are dropped so `buildModel`
+ * reapplies only the current KDL policy. A tokenizer the row's own id resolves
+ * is policy output too; a copied one survives only for ids policy cannot
+ * classify (e.g. GitLab Duo aliases of Claude models).
+ */
+export function buildGeneratedModel(model: ModelSpec<Api>): Model<Api> {
+	const spec = { ...model };
+	if (resolveModelTokenizer(spec.requestModelId ?? spec.id, spec.provider) !== undefined) delete spec.tokenizer;
+	delete spec.promptCache;
+	delete spec.promptCacheConfig;
+	delete spec.kindConfig;
+	return buildModel(spec);
 }
 
 if (import.meta.main) {

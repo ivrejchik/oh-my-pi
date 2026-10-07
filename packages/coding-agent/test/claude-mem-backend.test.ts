@@ -24,7 +24,6 @@ import {
 	parseClaudeMemMemoryRef,
 } from "@oh-my-pi/pi-coding-agent/claude-mem/state";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { SettingPath } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
 import { resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
 import type { AgentSessionEvent, AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { isRecord } from "@oh-my-pi/pi-utils";
@@ -191,7 +190,7 @@ function startWorker(respond?: Responder): FakeWorker {
 async function claudeMemSettings(
 	cwd: string,
 	workerUrl: string,
-	overrides: Partial<Record<SettingPath, unknown>> = {},
+	overrides: Record<string, unknown> = {},
 ): Promise<Settings> {
 	const settings = Settings.isolated({
 		"memory.backend": "claude-mem",
@@ -215,7 +214,7 @@ interface PrimaryFixture {
 async function startPrimary(
 	worker: FakeWorker,
 	sessionId: string,
-	overrides: Partial<Record<SettingPath, unknown>> = {},
+	overrides: Record<string, unknown> = {},
 ): Promise<PrimaryFixture> {
 	const cwd = await makeTempDir("claude-mem-project");
 	const settings = await claudeMemSettings(cwd, worker.url, overrides);

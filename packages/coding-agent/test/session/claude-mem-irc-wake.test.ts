@@ -122,7 +122,7 @@ describe("claude-mem IRC wake authorization on a real AgentSession", () => {
 		IrcBus.resetGlobalForTests();
 		tempDir = TempDir.createSync("@claude-mem-irc-wake-");
 		authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("openai", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
 		modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 		worker = new FakeWorker();
 		settings = Settings.isolated({

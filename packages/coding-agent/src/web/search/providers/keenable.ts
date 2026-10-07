@@ -191,7 +191,7 @@ export async function searchKeenable(params: SearchParams): Promise<SearchRespon
 	}
 
 	const numResults = clampNumResults(keenableParams.num_results, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
-	const keyResolver = params.authStorage.resolver("keenable", { sessionId: params.sessionId });
+	const keyResolver = params.authStorage.keys.resolver("keenable", { sessionId: params.sessionId });
 	const resolvedKey = await resolveApiKeyOnce(keyResolver, params.signal);
 	const authMode = resolvedKey ? "api_key" : "keyless";
 	const call = (searchParams: KeenableSearchParams) =>
@@ -225,7 +225,7 @@ export class KeenableProvider extends SearchProvider {
 
 	/** Auto-chain admission requires a credential (`/login keenable` or KEENABLE_API_KEY). */
 	isAvailable(authStorage: AuthStorage): boolean {
-		return authStorage.hasAuth("keenable") || !!getEnvApiKey("keenable");
+		return authStorage.keys.source("keenable") !== undefined || !!getEnvApiKey("keenable");
 	}
 
 	/** Explicit selection runs keyless against the public endpoint when no credential resolves. */

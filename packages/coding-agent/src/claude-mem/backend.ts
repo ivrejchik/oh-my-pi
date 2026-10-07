@@ -26,6 +26,8 @@ import { observationToText } from "./content";
 import { resolveClaudeMemProject } from "./project";
 import { ClaudeMemSessionState, getClaudeMemSessionState, setClaudeMemSessionState } from "./state";
 import { ensureClaudeMemWorker } from "./worker";
+import { cfgClaudeMemInjectionTokenLimit } from "./settings";
+import { cfgMemoryBackend } from "../memory-backend/settings";
 
 const STATIC_INSTRUCTIONS = [
 	"# Memory",
@@ -144,7 +146,7 @@ export const claudeMemBackend: MemoryBackend = {
 		if (primary?.contextSnippet) parts.push(primary.contextSnippet);
 		if (primary?.lastRecallSnippet) parts.push(primary.lastRecallSnippet);
 		const rendered = parts.join("\n\n").trim();
-		const limit = primary?.config.injectionTokenLimit ?? settings.get("claudeMem.injectionTokenLimit");
+		const limit = primary?.config.injectionTokenLimit ?? cfgClaudeMemInjectionTokenLimit.get(settings);
 		return limit > 0 ? truncateApproxTokens(rendered, limit) : rendered;
 	},
 
@@ -184,7 +186,7 @@ export const claudeMemBackend: MemoryBackend = {
 		if (
 			!session?.sessionId ||
 			previous?.aliasOf ||
-			session.settings.get("memory.backend") !== CLAUDE_MEM_BACKEND_ID
+			cfgMemoryBackend.get(session.settings) !== CLAUDE_MEM_BACKEND_ID
 		) {
 			return;
 		}
