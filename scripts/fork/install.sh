@@ -25,8 +25,17 @@ bun install --frozen-lockfile
 version="$(bun -e 'console.log(require("./packages/natives/package.json").version)')"
 platform="$(bun -e 'console.log(`${process.platform}-${process.arch}`)')"
 native_dir="packages/natives/native"
-sentinel="__piNativesV${version//[^A-Za-z0-9]/_}"
-if ! grep -qaw "$sentinel" "$native_dir"/pi_natives."$platform"*.node 2>/dev/null; then
+# The loader's own helpers know every stamp format (stamp slot and legacy export).
+natives_current() {
+	bun -e '
+		const { containsVersionStamp, containsLegacyVersionSentinel } = await import("./packages/natives/native/version-sentinel.js");
+		const [dir, platform, version] = process.argv.slice(1);
+		const name = (await Array.fromAsync(new Bun.Glob(`pi_natives.${platform}*.node`).scan(dir)))[0];
+		const bytes = name ? await Bun.file(`${dir}/${name}`).bytes() : new Uint8Array();
+		process.exit(containsVersionStamp(bytes, version) || containsLegacyVersionSentinel(bytes, version) ? 0 : 1);
+	' "$native_dir" "$platform" "$version"
+}
+if ! natives_current; then
 	tmp="$(mktemp -d)"
 	trap 'rm -rf "$tmp"' EXIT
 	leaf="pi-natives-${platform}"
