@@ -82,10 +82,10 @@ jobs:
               [ -f verify.log ] && log=verify.log
               body="$(printf 'Automatic merge of upstream `%s` into `custom` stopped: %s.\n\nRun: %s\n\n```\n%s\n```\n\nResolve locally:\n\n```bash\nscripts/fork/merge-upstream.sh %s\n# fix conflicts, git commit\nscripts/fork/install.sh && scripts/fork/verify.sh\ngit push origin custom "%s"\n```\n' \
                 "$TAG" "$KIND" "$RUN_URL" "$(tail -n 60 "$log")" "${TAG#v}" "$TAG")"
-              existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')"
+              existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
               if [ -n "$existing" ]; then
-                gh issue comment "$existing" --body "$body"
-              else
-                gh issue create --title "$title" --body "$body"
+                echo "Already reported in #$existing"
+                exit 0
               fi
+              gh issue create --title "$title" --body "$body"
               exit 1
