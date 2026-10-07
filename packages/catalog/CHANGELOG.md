@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `openai-codex/gpt-6.1-sol` not appearing in Codex discovery: the backend hides it from client version 0.155.1, so Codex requests now report 0.159.0 (backport of upstream 00fd4a0e47, 37bb80e3b2).
+
 ## [18.2.11] - 2026-09-23
 
 ### Added
