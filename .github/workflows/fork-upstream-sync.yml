@@ -1,0 +1,91 @@
+# Merges each new upstream omp release into the fork's `custom` branch.
+# A clean merge is verified (typecheck, fork tests, bundled agents) and pushed;
+# a conflict or failed verification opens an issue instead of pushing.
+#
+# FORK_SYNC_TOKEN: a token with `repo` and `workflow` scopes. The default
+# GITHUB_TOKEN cannot push merges that touch .github/workflows.
+name: fork-upstream-sync
+
+on:
+   schedule:
+      - cron: "17 5 * * *"
+   workflow_dispatch:
+      inputs:
+         version:
+            description: "Upstream release to merge (default: latest on npm)"
+            required: false
+
+permissions:
+   contents: write
+   issues: write
+
+concurrency:
+   group: fork-upstream-sync
+   cancel-in-progress: false
+
+jobs:
+   sync:
+      if: github.repository == 'ivrejchik/oh-my-pi'
+      runs-on: ubuntu-latest
+      timeout-minutes: 30
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+           with:
+              ref: custom
+              fetch-depth: 0
+              token: ${{ secrets.FORK_SYNC_TOKEN }}
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+         - name: Configure git identity
+           run: |
+              git config user.name "fork-upstream-sync"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+         - name: Merge upstream release
+           id: merge
+           shell: bash
+           env:
+              VERSION: ${{ inputs.version }}
+           run: |
+              version="${VERSION:-$(npm view @oh-my-pi/pi-coding-agent version)}"
+              before="$(git rev-parse HEAD)"
+              set +e
+              scripts/fork/merge-upstream.sh "$version" 2>&1 | tee merge.log
+              status=${PIPESTATUS[0]}
+              set -e
+              echo "status=$status" >> "$GITHUB_OUTPUT"
+              echo "tag=v$version" >> "$GITHUB_OUTPUT"
+              if [ "$(git rev-parse HEAD)" != "$before" ]; then echo "merged=true" >> "$GITHUB_OUTPUT"; fi
+              if [ "$status" = 2 ]; then git merge --abort; fi
+              if [ "$status" = 1 ]; then exit 1; fi
+         - name: Verify merged fork
+           id: verify
+           if: steps.merge.outputs.merged == 'true'
+           shell: bash
+           run: |
+              scripts/fork/install.sh --no-launcher
+              scripts/fork/verify.sh 2>&1 | tee verify.log
+         - name: Push merge
+           if: steps.verify.outcome == 'success'
+           run: |
+              git push origin HEAD:custom
+              git push origin "refs/tags/${{ steps.merge.outputs.tag }}"
+         - name: Report conflict or failed verification
+           if: always() && (steps.merge.outputs.status == '2' || steps.verify.outcome == 'failure')
+           env:
+              GH_TOKEN: ${{ github.token }}
+              TAG: ${{ steps.merge.outputs.tag }}
+              KIND: ${{ steps.merge.outputs.status == '2' && 'merge conflicts' || 'failed verification' }}
+              RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+           shell: bash
+           run: |
+              title="Upstream $TAG: $KIND"
+              log=merge.log
+              [ -f verify.log ] && log=verify.log
+              body="$(printf 'Automatic merge of upstream `%s` into `custom` stopped: %s.\n\nRun: %s\n\n```\n%s\n```\n\nResolve locally:\n\n```bash\nscripts/fork/merge-upstream.sh %s\n# fix conflicts, git commit\nscripts/fork/install.sh && scripts/fork/verify.sh\ngit push origin custom "%s"\n```\n' \
+                "$TAG" "$KIND" "$RUN_URL" "$(tail -n 60 "$log")" "${TAG#v}" "$TAG")"
+              existing="$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')"
+              if [ -n "$existing" ]; then
+                gh issue comment "$existing" --body "$body"
+              else
+                gh issue create --title "$title" --body "$body"
+              fi
+              exit 1

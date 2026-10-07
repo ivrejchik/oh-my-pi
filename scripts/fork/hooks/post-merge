@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Enabled by `git config core.hooksPath scripts/fork/hooks`.
+# Re-prepares the source install after every pull or merge.
+exec "$(git rev-parse --show-toplevel)/scripts/fork/install.sh"
