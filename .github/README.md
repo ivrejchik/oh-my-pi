@@ -2,7 +2,7 @@
 
 Форк [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) с моими доработками.
 Ветка по умолчанию — `custom`: это последний релиз апстрима плюс доработки сверху.
-Всё обновляется само: новые релизы апстрима раз в день вливаются в `custom`, а каждая машина раз в час подтягивает `custom` и свои настройки.
+Сборка и проверка идут на GitHub сами: релизы апстрима раз в день вливаются в `custom`, а каждый push в `custom` проверяется. На машину обновление попадает только когда ты сам запускаешь `omp-sync`.
 
 Оригинальный README апстрима лежит в корне: [README.md](https://github.com/ivrejchik/oh-my-pi/blob/custom/README.md).
 GitHub показывает этот файл (`.github/README.md`) вместо него, а корневой README не тронут, чтобы не конфликтовать при слиянии.
@@ -14,17 +14,17 @@ GitHub показывает этот файл (`.github/README.md`) вместо
 | Бэкенд памяти **claude-mem**: работает с воркером плагина claude-mem напрямую по HTTP (стартовый контекст, наблюдения по результатам инструментов, саммари ходов, `recall`/`retain`/`reflect`) | `memory.backend: claude-mem`, тонкая настройка в `claudeMem.*` | [docs/claude-mem-memory-backend.md](https://github.com/ivrejchik/oh-my-pi/blob/custom/docs/claude-mem-memory-backend.md) |
 | Веб-поиск **Keenable** | `web/keenable` в `modelRoles.web`; ключ через `/login keenable` или `KEENABLE_API_KEY`; при явном выборе без ключа работает публичный эндпоинт | [docs/tools/web_search.md](https://github.com/ivrejchik/oh-my-pi/blob/custom/docs/tools/web_search.md) |
 | Встроенный агент **architecture-deep-researcher**: исследование архитектурных решений с источниками | доступен в `task` из любой директории | [prompt](https://github.com/ivrejchik/oh-my-pi/blob/custom/packages/coding-agent/src/prompts/agents/architecture-deep-researcher.md) |
-| Инструменты форка: автослияние апстрима, релизы и автообновление на машинах | см. ниже | [scripts/fork](https://github.com/ivrejchik/oh-my-pi/tree/custom/scripts/fork) |
+| Инструменты форка: автослияние апстрима, сборка на GitHub, релизы и синк на машинах | см. ниже | [scripts/fork](https://github.com/ivrejchik/oh-my-pi/tree/custom/scripts/fork) |
 
 ## Как всё устроено
 
 ```mermaid
 flowchart LR
-  U["can1357/oh-my-pi<br/>релизы vX.Y.Z"] -->|"GitHub Action раз в день:<br/>merge + verify"| C["ivrejchik/oh-my-pi<br/>ветка custom"]
+  U["can1357/oh-my-pi<br/>релизы vX.Y.Z"] -->|"fork-upstream-sync раз в день:<br/>merge + сборка + проверка"| C["ivrejchik/oh-my-pi<br/>ветка custom"]
+  P["твои push"] -->|"fork-verify:<br/>сборка + проверка"| C
   K["ivrejchik/omp-config<br/>private"]
-  C -->|"omp-sync --auto раз в час"| M["машина"]
-  K -->|"omp-sync --auto раз в час"| M
-  M --> R["~/.local/share/omp-fork/releases/&lt;sha&gt;<br/>~/.local/bin/omp → текущий релиз"]
+  C -->|"omp-sync, когда захочешь"| M["машина"]
+  K -->|"omp-sync, когда захочешь"| M
 ```
 
 Две репы:
@@ -58,47 +58,36 @@ gh repo clone ivrejchik/omp-config ~/work/personal/omp-config
 omp                                               # затем /login для каждого провайдера
 ```
 
-`bootstrap.sh`:
-
-1. клонирует этот форк рядом с omp-config (путь можно задать через `OMP_FORK_DIR`);
-2. подключает git-хуки в обеих репах и ставит `omp-sync` в `~/.local/bin`;
-3. запускает первый синк, который ставит текущий релиз;
-4. включает автосинк раз в час и при входе в систему: launchd на macOS, systemd user timer на Linux (Linux-ветка ещё не проверялась на живой машине). Пропустить этот шаг: `OMP_SYNC_NO_SCHEDULE=1`.
+`bootstrap.sh` клонирует этот форк рядом с omp-config (путь можно задать через `OMP_FORK_DIR`), подключает git-хуки в обеих репах, ставит `omp-sync` в `~/.local/bin` и запускает первый синк, который ставит текущий релиз.
 
 Если на машине уже был глобальный `omp`, установленный через `bun`, `~/.bun/bin/omp` перенаправляется на `~/.local/bin/omp`. В `PATH` должен быть `~/.local/bin`.
 
-## Автосинк на машине
+## Обновить машину: `omp-sync`
 
-Раз в час (и при входе в систему) запускается `omp-sync --auto`:
+Запускай, когда захочешь подтянуть новую сборку и настройки:
 
 1. Коммитит изменения настроек, сделанные на этой машине (`sync(<host>): settings <дата>`), подтягивает и пушит omp-config.
-2. Создаёт симлинки на всё, что лежит в `home/`, внутри `~/.omp/agent/`.
-3. Подтягивает `custom` в чекаут форка, только fast-forward. Свои коммиты из чекаута форка автосинк не пушит.
-4. Ставит новый HEAD как релиз и переключает на него `omp`.
+2. Создаёт симлинки на всё, что лежит в `home/`, внутри `~/.omp/agent/`. Если там уже был обычный файл, он сохраняется как `*.pre-omp-config-<время>`.
+3. Если форк на ветке `custom` и без незакоммиченных правок, подтягивает его и пушит локальные коммиты.
+4. Ставит новый HEAD как релиз и переключает на него `omp`. Открытые сессии работают дальше на прежней версии, новые стартуют на новой.
 
-Если что-то пошло не так, автосинк ничего не ломает:
+Конфликт при `git pull` сразу откатывается: в живом `config.yml` и в коде никогда не остаются маркеры конфликта, а `omp-sync` подсказывает, что слить руками. Мерж, начатый руками, `omp-sync` не трогает.
 
-- **Конфликт** при слиянии сразу откатывается, чтобы в живом `config.yml` и в коде никогда не оставались маркеры конфликта.
-- **Мерж, начатый руками**, автосинк не трогает: видит его и пропускает шаг.
-- **Нет сети** — тихо пропускает и пробует через час.
-
-О новой версии и о проблемах приходит уведомление macOS (о каждой проблеме один раз).
-
-| Что | Как |
-| --- | --- |
-| Синкнуть прямо сейчас | `omp-sync` (интерактивно; ещё и пушит локальные коммиты форка) или `launchctl kickstart -k gui/$(id -u)/omp-config.sync` |
-| Лог | `~/.local/state/omp-sync/omp-sync.log` |
-| Выключить | macOS: `launchctl bootout gui/$(id -u)/omp-config.sync`; Linux: `systemctl --user disable --now omp-sync.timer` |
-| Включить снова | `~/work/personal/omp-config/bootstrap.sh` |
+Обычный `git pull` в любой из двух реп тоже обновляет машину через хук `post-merge`. Но изменённые настройки коммитит только `omp-sync`.
 
 Правила:
 
 - **Не запускай `omp update`.** Он ставит стоковый omp из npm. Проверка обновлений при старте отключена (`startup.checkUpdate: false`).
 - **Незакоммиченные правки в чекауте форка в релиз не попадают.** Проверить их можно так: `bun packages/coding-agent/src/cli.ts` внутри чекаута. Или закоммить и запусти `scripts/fork/install.sh`.
+- Перед синком стоит глянуть, что последняя сборка на [GitHub Actions](https://github.com/ivrejchik/oh-my-pi/actions) зелёная.
 
-## Автообновление с апстрима
+## Сборка на GitHub
 
-Воркфлоу [`fork-upstream-sync`](https://github.com/ivrejchik/oh-my-pi/blob/custom/.github/workflows/fork-upstream-sync.yml) запускается каждый день в 05:17 UTC. Запустить вручную:
+Оба воркфлоу собирают форк одинаково (`scripts/fork/install.sh --no-launcher` + `scripts/fork/verify.sh`: проверка типов, тесты форка, встроенные агенты).
+
+**[`fork-verify`](https://github.com/ivrejchik/oh-my-pi/blob/custom/.github/workflows/fork-verify.yml)** запускается на каждый push в `custom`, который меняет код (`packages/`, `scripts/fork/`, `package.json`, `bun.lock`). Красный значок у коммита значит, что синкать его пока не стоит.
+
+**[`fork-upstream-sync`](https://github.com/ivrejchik/oh-my-pi/blob/custom/.github/workflows/fork-upstream-sync.yml)** запускается каждый день в 05:17 UTC. Запустить вручную:
 
 ```bash
 gh workflow run fork-upstream-sync.yml --repo ivrejchik/oh-my-pi --ref custom              # последний релиз
@@ -108,8 +97,8 @@ gh workflow run fork-upstream-sync.yml --repo ivrejchik/oh-my-pi --ref custom -f
 Что он делает:
 
 1. Берёт последнюю версию `@oh-my-pi/pi-coding-agent` из npm. Релиз вливается только если его натив уже опубликован в npm.
-2. `scripts/fork/merge-upstream.sh` делает `git merge vX.Y.Z` в `custom`. Это merge, а не rebase: ветка никогда не перезаписывается через force-push, поэтому машинам достаточно fast-forward.
-3. Если слилось без конфликтов: `install.sh --no-launcher` + `verify.sh`, затем push в `custom` и тега `vX.Y.Z`. В течение часа машины подхватят новую версию сами.
+2. `scripts/fork/merge-upstream.sh` делает `git merge vX.Y.Z` в `custom`. Это merge, а не rebase: ветка никогда не перезаписывается через force-push.
+3. Если слилось без конфликтов, собирает и проверяет результат, затем пушит `custom` и тег `vX.Y.Z`. На машины новая версия попадёт при следующем `omp-sync`.
 4. Если есть конфликт или проверка упала, в форк ничего не пушится, а заводится issue «Upstream vX.Y.Z: merge conflicts» или «… failed verification». На один релиз создаётся одна issue.
 
 Нужен секрет `FORK_SYNC_TOKEN` — токен со скоупами `repo` и `workflow`. Стандартный `GITHUB_TOKEN` не может пушить мерж, который меняет `.github/workflows`. Обновить:
@@ -122,7 +111,7 @@ gh auth token | gh secret set FORK_SYNC_TOKEN --repo ivrejchik/oh-my-pi
 
 ## Если автослияние упало с конфликтом
 
-omp запускается из релизов, а автосинк не трогает мерж, начатый руками. Поэтому разрешать конфликт можно прямо в чекауте форка:
+omp запускается из релизов, поэтому разрешать конфликт можно прямо в чекауте форка: открытые сессии это не заденет.
 
 ```bash
 cd ~/work/personal/oh-my-pi
@@ -132,7 +121,7 @@ scripts/fork/merge-upstream.sh X.Y.Z        # exit 2 = есть конфликт
 scripts/fork/install.sh --no-launcher       # зависимости в чекауте для проверки
 scripts/fork/verify.sh
 git push origin custom vX.Y.Z
-scripts/fork/install.sh                     # сразу перейти на новый релиз (иначе автосинк сделает это сам)
+scripts/fork/install.sh                     # перейти на новый релиз на этой машине
 gh issue close <N> --repo ivrejchik/oh-my-pi
 ```
 
@@ -159,20 +148,20 @@ gh issue close <N> --repo ivrejchik/oh-my-pi
 | --- | --- |
 | `scripts/fork/merge-upstream.sh [X.Y.Z]` | Вливает релиз апстрима (по умолчанию последний из npm). Коды выхода: `0` — слито или уже есть, `1` — ошибка, `2` — конфликт. |
 | `scripts/fork/install.sh` | Ставит закоммиченный HEAD как релиз (зависимости, натив из npm или жёсткой ссылкой из соседнего релиза), переключает `~/.local/bin/omp` и удаляет неиспользуемые релизы. Если HEAD уже установлен, отрабатывает почти мгновенно. Папку релизов можно задать через `OMP_RELEASES_DIR`. |
-| `scripts/fork/install.sh --no-launcher` | Готовит текущий чекаут на месте (зависимости + натив), без релиза и лаунчера. Нужен для CI, `verify.sh` и разработки. |
+| `scripts/fork/install.sh --no-launcher` | Готовит текущий чекаут на месте (зависимости + натив), без релиза и лаунчера. Нужен для сборки на GitHub, `verify.sh` и разработки. |
 | `scripts/fork/verify.sh` | Проверка типов в `coding-agent`, все тесты, изменённые форком относительно ближайшего тега `v*`, проверка, что встроенные агенты разбираются. |
 | `scripts/fork/hooks/post-merge` | После ручного `git pull` в чекауте вызывает `install.sh`. Подключается через `git config core.hooksPath scripts/fork/hooks` (это делает `bootstrap.sh`). Ничего не делает внутри `omp-sync`, который сам вызывает `install.sh`, и в worktree релизов. |
 
 ## Своя доработка
 
-1. Закоммить в `custom` и запушь. Другие машины подхватят её в течение часа. На этой машине `git push` + `scripts/fork/install.sh` или просто `omp-sync`.
+1. Закоммить в `custom` и запушь. `fork-verify` соберёт и проверит её на GitHub. Другие машины получат её при следующем `omp-sync`, а эта — после `scripts/fork/install.sh` или `omp-sync`.
 2. Чтобы меньше конфликтовать с апстримом, клади код в отдельные файлы, а в апстримных файлах оставляй минимальные точки подключения.
-3. Тесты клади в `packages/*/test/`: `verify.sh` и CI сами найдут и прогонят их.
+3. Тесты клади в `packages/*/test/`: `verify.sh` найдёт и прогонит их и локально, и на GitHub.
 4. Новые настройки: свой файл `<domain>/settings.ts` с `register({ id, ... })`, плюс строка в `config/all-settings.ts`. Читать через `cfgX.get(settings)`.
 5. Новый встроенный агент: markdown с frontmatter (`name`, `description`) в `src/prompts/agents/`, импорт и запись в `EMBEDDED_AGENT_DEFS` в `src/task/agents.ts`. Встроенные агенты разбираются в строгом режиме: одна ошибка во frontmatter ломает поиск всех агентов. `verify.sh` это ловит.
 
 ## Настройки (omp-config)
 
-- Каждый файл или папка из `home/` становится симлинком в `~/.omp/agent/`. omp пишет изменения прямо через симлинк, поэтому всё, что ты меняешь через `/settings`, `/model` или `omp config set`, попадает в репу и уходит на GitHub ближайшим синком.
+- Каждый файл или папка из `home/` становится симлинком в `~/.omp/agent/`. omp пишет изменения прямо через симлинк, поэтому всё, что ты меняешь через `/settings`, `/model` или `omp config set`, попадает в репу и коммитится следующим `omp-sync`.
 - Чтобы синкать что-то ещё (`agents/`, `skills/`, `rules/`, `AGENTS.md`, `models.yml`), перенеси это в `home/` и запусти `omp-sync`.
 - Не синкаются: `agent.db` (ключи), сессии, история, кеши.
