@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
    verify:
-      if: github.repository == 'ivrejchik/oh-my-pi' && !startsWith(github.event.head_commit.message, 'chore(fork): merge upstream')
+      if: "github.repository == 'ivrejchik/oh-my-pi' && !startsWith(github.event.head_commit.message, 'chore(fork): merge upstream')"
       runs-on: ubuntu-latest
       timeout-minutes: 30
       steps:
