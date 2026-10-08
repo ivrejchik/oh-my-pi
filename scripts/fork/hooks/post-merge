@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Enabled by `git config core.hooksPath scripts/fork/hooks`.
-# Re-prepares the source install after every pull or merge.
-# `core.hooksPath` is shared by every worktree; only the main checkout owns the
-# `omp` launcher, so a merge in a linked worktree must not re-point it there.
-if [ "$(git rev-parse --path-format=absolute --git-dir)" != "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
+# Releases the new HEAD after a pull or merge (see scripts/fork/install.sh).
+# `core.hooksPath` is shared by every worktree, including the release
+# worktrees; only the main checkout releases. omp-sync runs install.sh itself.
+if [ -n "${OMP_SYNC_ACTIVE:-}" ] ||
+	[ "$(git rev-parse --path-format=absolute --git-dir)" != "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
 	exit 0
 fi
 exec "$(git rev-parse --show-toplevel)/scripts/fork/install.sh"
