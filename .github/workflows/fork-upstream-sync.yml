@@ -75,7 +75,7 @@ jobs:
               TAG: ${{ steps.merge.outputs.tag }}
            shell: bash
            run: |
-              for number in $(gh issue list --state open --search 'in:title "Upstream v"' --json number,title --jq '.[] | select(.title | startswith("Upstream v")) | .number'); do
+              for number in $(gh issue list --state open --limit 100 --json number,title --jq '.[] | select(.title | startswith("Upstream v")) | .number'); do
                 gh issue close "$number" --comment "Resolved: \`custom\` now contains upstream \`$TAG\` ($(git rev-parse --short HEAD))."
               done
          - name: Report conflict or failed verification
@@ -99,7 +99,7 @@ jobs:
               fi
               url="$(gh issue create --title "$title" --body "$body")"
               # One open issue at a time: resolving the newest release covers the older ones.
-              for number in $(gh issue list --state open --search 'in:title "Upstream v"' --json number,title --jq '.[] | select(.title | startswith("Upstream v")) | .number'); do
+              for number in $(gh issue list --state open --limit 100 --json number,title --jq '.[] | select(.title | startswith("Upstream v")) | .number'); do
                 [ "$number" = "${url##*/}" ] || gh issue close "$number" --reason "not planned" --comment "Superseded by $url."
               done
               exit 1
