@@ -1324,6 +1324,7 @@ export class VibeSessionRegistry {
 			authStorage: session.authStorage,
 			modelRegistry: session.modelRegistry,
 			settings: session.settings,
+			asyncJobManager: session.asyncJobManager,
 			inheritedSessionAgents: session.getSessionAgents?.(),
 			mcpManager: session.mcpManager ?? MCPManager.instance(),
 			contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
@@ -1342,6 +1343,7 @@ export class VibeSessionRegistry {
 			parentClaudeMemDispatch: dispatch,
 			parentTelemetry: session.getTelemetry?.(),
 			parentAgentId: session.getAgentId?.() ?? MAIN_AGENT_ID,
+			parentPromptCacheKey: session.getPromptCacheKey?.(),
 			parentServiceTier: session.getServiceTierByFamily ? (session.getServiceTierByFamily() ?? null) : undefined,
 			oauthAccountPools: Object.hasOwn(agentAccountPools, record.agent.name)
 				? agentAccountPools[record.agent.name]

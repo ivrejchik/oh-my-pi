@@ -3,8 +3,9 @@
 #
 #   scripts/fork/verify.sh
 #
-# Typechecks coding-agent and runs every test file the fork changed relative to
-# the nearest upstream release tag, so the list follows the fork's commits.
+# Typechecks coding-agent, checks that the generated catalog carries the fork's
+# additions, and runs every test file the fork changed relative to the nearest
+# upstream release tag, so the list follows the fork's commits.
 # Expects scripts/fork/install.sh to have run.
 set -euo pipefail
 
@@ -14,6 +15,17 @@ base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD)"
 echo "Verifying fork changes since $base"
 
 (cd packages/coding-agent && bun run check:types)
+
+# A merge resolved by hand must regenerate the catalog (see merge-upstream.sh).
+catalog="packages/catalog/src/models.json packages/catalog/src/compat/rules.json packages/catalog/src/compat/rules/auth/_order.kdl"
+# shellcheck disable=SC2086 # fixed repo paths without whitespace
+before="$(shasum $catalog)"
+bun scripts/fork/reapply-catalog.ts >/dev/null
+# shellcheck disable=SC2086
+if [ "$(shasum $catalog)" != "$before" ]; then
+	echo "Generated catalog was stale; scripts/fork/reapply-catalog.ts rewrote it. Commit the result." >&2
+	exit 1
+fi
 
 tests="$(git diff --name-only --diff-filter=d "$base" HEAD -- 'packages/*/test/**.test.ts')"
 if [ -z "$tests" ]; then

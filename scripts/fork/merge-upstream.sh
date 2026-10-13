@@ -7,8 +7,11 @@
 # machine can keep using a plain `git pull`. Only releases whose natives are on
 # npm are merged, because scripts/fork/install.sh installs them from there.
 #
-# On conflict the merge is left in progress: resolve it, `git commit`, then run
-# scripts/fork/install.sh and scripts/fork/verify.sh.
+# Conflicts in catalog files upstream regenerates (models.json, rules.json,
+# the login-order list) are resolved automatically: upstream's copy plus
+# scripts/fork/reapply-catalog.ts. Any other conflict leaves the merge in
+# progress: resolve it, `git commit`, then run scripts/fork/install.sh
+# --no-launcher and scripts/fork/verify.sh.
 #
 # Exit codes: 0 merged or already up to date, 1 error, 2 conflict.
 set -euo pipefail
@@ -41,8 +44,31 @@ fi
 current="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD)"
 if git merge --no-edit -m "chore(fork): merge upstream $tag" "$tag"; then
 	echo "Merged $tag (was $current)"
-else
+	exit 0
+fi
+
+generated="packages/catalog/src/models.json packages/catalog/src/compat/rules.json packages/catalog/src/compat/rules/auth/_order.kdl"
+conflicted="$(git diff --name-only --diff-filter=U)"
+regenerate=0
+for file in $generated; do
+	if printf '%s\n' "$conflicted" | grep -qxF "$file"; then
+		git checkout --theirs -- "$file"
+		regenerate=1
+	fi
+done
+# Regenerating needs the merged tree's dependencies and natives. Paths stay
+# unmerged in the index until regeneration succeeds.
+if [ "$regenerate" = 1 ] && scripts/fork/install.sh --no-launcher >/dev/null && bun scripts/fork/reapply-catalog.ts; then
+	# shellcheck disable=SC2086 # fixed repo paths without whitespace
+	git add -- $generated
+	echo "Regenerated catalog files from upstream's copies"
+fi
+
+remaining="$(git diff --name-only --diff-filter=U)"
+if [ -n "$remaining" ]; then
 	echo "Conflicts merging $tag into $current-based fork:" >&2
-	git diff --name-only --diff-filter=U >&2
+	echo "$remaining" >&2
 	exit 2
 fi
+git commit --no-edit
+echo "Merged $tag (was $current)"
