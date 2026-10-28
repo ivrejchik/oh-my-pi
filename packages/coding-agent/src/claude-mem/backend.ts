@@ -38,6 +38,7 @@ const STATIC_INSTRUCTIONS = [
 	"- Use `retain` to store durable facts (decisions, conventions, gotchas) worth remembering in future sessions.",
 	"- Use `reflect` to gather every relevant observation for a broader question.",
 	"- Tool results and turn summaries are recorded automatically; do not retain what a tool already showed.",
+	"- `work_state_write` / `work_state_read` (when offered) keep this project's to-do lists and working state across sessions; open items show in `<claude_mem_context>` at every session start and in claude-mem's My Work.",
 	"",
 ].join("\n");
 

@@ -6,6 +6,12 @@
 
 - Added the `claude-mem` memory backend (`memory.backend: claude-mem`): drives the claude-mem worker natively over HTTP for startup context, per-turn prompt registration, tool-result observations, turn summaries, first-turn recall, and the `recall`/`retain`/`reflect` tools. `claudeMem.platformSource` tags omp's writes; omp's reads span every platform source, so Claude Code history stays visible.
 - Added the Keenable web-search engine (`web/keenable`, `KEENABLE_API_KEY`), placed after Exa in the default `web` chain ([#12046](https://github.com/can1357/oh-my-pi/pull/12046)).
+- Added the claude-mem `work_state_write` / `work_state_read` tools (claude-mem 15 work state): cross-session to-do lists and working state per project, shown at session start and in claude-mem's My Work. Hidden when `CLAUDE_MEM_WORK_STATE_ENABLED` is `false`.
+
+### Changed
+
+- The claude-mem backend sends the session `cwd` on prompt registration, startup context, summaries, and saves, so the worker names the project with its own resolver (worktrees, markers, git-remote and environment naming), and searches the checkout's read keys (`projects=`, worktree parent included) instead of the primary name only.
+- The claude-mem backend honors `CLAUDE_MEM_EXCLUDED_PROJECTS`: an excluded checkout loads no context, runs no first-turn recall, and records no prompts, observations, or summaries; saves report the exclusion instead of failing on a missing id.
 
 ## [18.10.3] - 2026-10-12
 

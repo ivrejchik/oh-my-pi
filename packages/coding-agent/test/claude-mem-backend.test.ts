@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { claudeMemBackend } from "@oh-my-pi/pi-coding-agent/claude-mem/backend";
 import { defaultWorkerPort, loadClaudeMemConfig } from "@oh-my-pi/pi-coding-agent/claude-mem/config";
 import { projectToolResponse } from "@oh-my-pi/pi-coding-agent/claude-mem/content";
-import { resolveClaudeMemProject } from "@oh-my-pi/pi-coding-agent/claude-mem/project";
+import { isClaudeMemProjectExcluded, resolveClaudeMemProject } from "@oh-my-pi/pi-coding-agent/claude-mem/project";
 import {
 	attachDispatchToMessage,
 	type ClaudeMemSessionState,
@@ -26,6 +26,7 @@ import {
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend";
 import type { AgentSessionEvent, AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { WorkStateReadTool, WorkStateWriteTool } from "@oh-my-pi/pi-coding-agent/tools/work-state";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
 interface RecordedRequest {
@@ -362,6 +363,24 @@ describe("resolveClaudeMemProject", () => {
 	});
 });
 
+describe("isClaudeMemProjectExcluded (plugin CLAUDE_MEM_EXCLUDED_PROJECTS parity)", () => {
+	it("matches a glob against the basename or the full path", () => {
+		expect(isClaudeMemProjectExcluded("/home/u/work/secret-repo", "secret-*")).toBe(true);
+		expect(isClaudeMemProjectExcluded("/home/u/work/client/a/b", "/home/u/work/client/**")).toBe(true);
+		expect(isClaudeMemProjectExcluded("/home/u/work/airflow", "secret-*, /other/**")).toBe(false);
+	});
+
+	it("lets dir/** cover dir itself, keeps * inside one segment, and expands ~", () => {
+		expect(isClaudeMemProjectExcluded("/home/u/work/client", "/home/u/work/client/**")).toBe(true);
+		expect(isClaudeMemProjectExcluded("/home/u/work/a/b", "/home/u/work/*")).toBe(false);
+		expect(isClaudeMemProjectExcluded(path.join(os.homedir(), "private", "x"), "~/private/*")).toBe(true);
+	});
+
+	it("excludes nothing for an empty pattern list", () => {
+		expect(isClaudeMemProjectExcluded("/anything", "  ")).toBe(false);
+	});
+});
+
 describe("projectToolResponse", () => {
 	it("joins text blocks and renders image blocks as placeholders", () => {
 		const result = {
@@ -409,10 +428,11 @@ describe("claudeMemBackend session lifecycle", () => {
 		const worker = startWorker(request =>
 			request.path === "/api/context/inject" ? new Response("## Recent\n- fixed the parser") : undefined,
 		);
-		const { session, settings, project } = await startPrimary(worker, "s-context", { "claudeMem.autoRecall": false });
+		const { session, settings } = await startPrimary(worker, "s-context", { "claudeMem.autoRecall": false });
 
 		const [inject] = worker.received("GET", "/api/context/inject");
-		expect(inject?.query).toEqual({ projects: project });
+		// The worker resolves the checkout's read keys (and exclusions) from cwd.
+		expect(inject?.query).toEqual({ cwd: settings.getCwd() });
 		expect(session.refreshBaseSystemPrompt).toHaveBeenCalledTimes(1);
 
 		const instructions = await claudeMemBackend.buildDeveloperInstructions("/tmp", settings, session as never);
@@ -527,7 +547,7 @@ describe("claudeMemBackend session lifecycle", () => {
 					{
 						id: 4242,
 						memory_session_id: "m-1",
-						project: request.query.project,
+						project: request.query.projects,
 						type: "decision",
 						title: "Use tabs",
 						subtitle: null,
@@ -547,7 +567,7 @@ describe("claudeMemBackend session lifecycle", () => {
 				query: request.query.query,
 			});
 		});
-		const { session, state, project } = await startPrimary(worker, "s-recall");
+		const { session, state, settings, project } = await startPrimary(worker, "s-recall");
 
 		const prompt = "What did we decide about indentation?";
 		const first = await startTurn(session as never, prompt);
@@ -556,7 +576,7 @@ describe("claudeMemBackend session lifecycle", () => {
 		expect(first).toContain("Tabs everywhere");
 
 		const [search] = worker.received("GET", "/api/search");
-		expect(search?.query).toMatchObject({ project, format: "json" });
+		expect(search?.query).toMatchObject({ projects: project, format: "json" });
 		// Reads span every platform source; only writes are tagged.
 		expect(search?.query).not.toHaveProperty("platformSource");
 		expect(search?.query.query).toContain(prompt);
@@ -567,7 +587,12 @@ describe("claudeMemBackend session lifecycle", () => {
 		await state.flush();
 		const inits = worker.received("POST", "/api/sessions/init");
 		expect(inits).toHaveLength(2);
-		expect(inits[0]?.body).toEqual({ contentSessionId: "s-recall", project, prompt, platformSource: "claude" });
+		expect(inits[0]?.body).toEqual({
+			contentSessionId: "s-recall",
+			cwd: settings.getCwd(),
+			prompt,
+			platformSource: "claude",
+		});
 		expect(inits[1]?.body).toEqual(inits[0]?.body);
 
 		await startTurn(session as never, "Now change the linter config");
@@ -1207,6 +1232,97 @@ describe("claudeMemBackend session lifecycle", () => {
 			contentSessionId: "s-new",
 			tool_use_id: "call-new-2",
 		});
+	});
+
+	it("loads no context and records nothing in a checkout matching CLAUDE_MEM_EXCLUDED_PROJECTS, but explicit recall still reads", async () => {
+		const worker = startWorker();
+		const dataDir = await makeTempDir("claude-mem-data");
+		await fs.writeFile(
+			path.join(dataDir, "settings.json"),
+			JSON.stringify({ CLAUDE_MEM_EXCLUDED_PROJECTS: "claude-mem-project-*" }),
+		);
+		const { session, state, project } = await startPrimary(worker, "s-excluded", { "claudeMem.dataDir": dataDir });
+
+		expect(await startTurn(session as never, "What did we decide?")).toBeUndefined();
+		toolCall(session, "read", "call-1", { path: "a.ts" }, { content: [{ type: "text", text: "body" }] });
+		session.emit({ type: "agent_end", messages: [assistantTurn("Read the file and fixed the key.")] as never });
+		await state.flush();
+
+		expect(worker.events.filter(event => event !== "GET /api/health" && event !== "GET /api/readiness")).toEqual([]);
+		// Explicit recall still reads: checkout keys first, then widened when empty.
+		await state.search("indentation");
+		const [scoped, widened, ...rest] = worker.received("GET", "/api/search");
+		expect(scoped?.query.projects).toBe(project);
+		expect(widened?.query).not.toHaveProperty("projects");
+		expect(rest).toEqual([]);
+	});
+
+	it("reports a save the worker skips as project_excluded instead of failing on the missing id", async () => {
+		const worker = startWorker(request =>
+			request.path === "/api/memory/save"
+				? Response.json({ success: false, skipped: true, reason: "project_excluded" })
+				: undefined,
+		);
+		const { state, settings } = await startPrimary(worker, "s-save-skipped");
+
+		await expect(state.saveMemory("Use tabs", { source: "test" })).rejects.toThrow(
+			"Not saved: this project is excluded from claude-mem",
+		);
+		const [save] = worker.received("POST", "/api/memory/save");
+		// The worker names the project from cwd; omp no longer sends its own.
+		expect(save?.body).toMatchObject({ text: "Use tabs", cwd: settings.getCwd() });
+		expect(save?.body).not.toHaveProperty("project");
+	});
+
+	it("writes and reads work state for the session checkout and surfaces the worker's refusal text", async () => {
+		const worker = startWorker(request => {
+			if (request.path === "/api/work-state/entries") {
+				if (isRecord(request.body) && request.body.list === "my-rules") {
+					return new Response('Not saved: "my-rules" is written only from My Rules in the claude-mem viewer.', {
+						status: 403,
+					});
+				}
+				return new Response('Saved to "release" in proj. Still open in it:\n- [doing] ship it');
+			}
+			if (request.path === "/api/work-state") return new Response("- release: [doing] ship it");
+			return undefined;
+		});
+		const { state, settings } = await startPrimary(worker, "s-work-state");
+
+		const written = await state.workStateWrite({ list: "release", fields: { task: "ship it", status: "doing" } });
+		expect(written).toBe('Saved to "release" in proj. Still open in it:\n- [doing] ship it');
+		expect(worker.received("POST", "/api/work-state/entries")[0]?.body).toEqual({
+			cwd: settings.getCwd(),
+			list: "release",
+			fields: { task: "ship it", status: "doing" },
+		});
+
+		expect(await state.workStateRead({ list: "release", includeClosed: true })).toBe("- release: [doing] ship it");
+		expect(worker.received("GET", "/api/work-state")[0]?.query).toEqual({
+			cwd: settings.getCwd(),
+			list: "release",
+			includeClosed: "true",
+		});
+
+		await expect(state.workStateWrite({ list: "my-rules", fields: { rule: "x" } })).rejects.toThrow(
+			'Not saved: "my-rules" is written only from My Rules',
+		);
+	});
+
+	it("offers the work_state tools with claude-mem unless the plugin disables work state", async () => {
+		const cwd = await makeTempDir("claude-mem-project");
+		const enabled = await claudeMemSettings(cwd, "http://127.0.0.1:1");
+		expect(WorkStateWriteTool.createIf({ settings: enabled } as never)).not.toBeNull();
+		expect(WorkStateReadTool.createIf({ settings: enabled } as never)).not.toBeNull();
+
+		const dataDir = await makeTempDir("claude-mem-data");
+		await fs.writeFile(
+			path.join(dataDir, "settings.json"),
+			JSON.stringify({ CLAUDE_MEM_WORK_STATE_ENABLED: "false" }),
+		);
+		const disabled = await claudeMemSettings(cwd, "http://127.0.0.1:1", { "claudeMem.dataDir": dataDir });
+		expect(WorkStateWriteTool.createIf({ settings: disabled } as never)).toBeNull();
+		expect(WorkStateReadTool.createIf({ settings: disabled } as never)).toBeNull();
 	});
 });
 

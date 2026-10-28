@@ -2,9 +2,10 @@
  * claude-mem backend configuration.
  *
  * Resolution order for every knob: `CLAUDE_MEM_*` environment > `claudeMem.*`
- * settings > the plugin's own `~/.claude-mem/settings.json` (worker host/port
- * only) > built-in default. The plugin file is consulted so an omp session
- * lands on the same worker the Claude Code hooks and the MCP server use.
+ * settings > the plugin's own `~/.claude-mem/settings.json` (worker host/port,
+ * project exclusions, work-state switch) > built-in default. The plugin file is
+ * consulted so an omp session lands on the same worker, and honors the same
+ * exclusions, as the Claude Code hooks and the MCP server.
  */
 
 import * as fs from "node:fs";
@@ -61,6 +62,10 @@ export interface ClaudeMemConfig {
 	/** How long the first turn waits for bootstrap/context/recall before generating without them. */
 	firstTurnDeadlineMs: number;
 	debug: boolean;
+	/** `CLAUDE_MEM_EXCLUDED_PROJECTS` (env > plugin settings.json): comma-separated cwd globs claude-mem never tracks. */
+	excludedProjects: string;
+	/** `CLAUDE_MEM_WORK_STATE_ENABLED` (env > plugin settings.json, default on): offer the work_state tools. */
+	workStateEnabled: boolean;
 }
 
 function envBool(value: string | undefined): boolean | undefined {
@@ -235,5 +240,8 @@ export function loadClaudeMemConfig(settings: Settings, env: NodeJS.ProcessEnv =
 			envInt(env.CLAUDE_MEM_FIRST_TURN_DEADLINE_MS) ?? cfgClaudeMemFirstTurnDeadlineMs.get(settings),
 		),
 		debug: envBool(env.CLAUDE_MEM_DEBUG) ?? cfgClaudeMemDebug.get(settings),
+		excludedProjects: envString(env.CLAUDE_MEM_EXCLUDED_PROJECTS) ?? plugin.CLAUDE_MEM_EXCLUDED_PROJECTS ?? "",
+		workStateEnabled:
+			envBool(env.CLAUDE_MEM_WORK_STATE_ENABLED) ?? envBool(plugin.CLAUDE_MEM_WORK_STATE_ENABLED) ?? true,
 	};
 }

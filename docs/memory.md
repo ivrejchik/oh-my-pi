@@ -70,7 +70,7 @@ autolearn:
   enabled: true
 ```
 
-With the local backend active, `learn` saves explicit durable lessons to the project's `learned.md`. Lessons are newest-first, deduplicated, secret-redacted, capped at 100 entries, and injected starting with the next session; a `learn` call does not mutate the active session's prompt-cache prefix. Each lesson's content is capped at 2,000 characters and optional context at 400 characters. Structured memory search, `recall`, `retain`, `reflect`, and `memory_edit` are not available for the local backend. Hindsight exposes `recall`, `retain`, and `reflect`; Mnemopi exposes `recall`, `retain`, `reflect`, and `memory_edit` (`update`/`forget`/`invalidate`); claude-mem exposes `recall`, `retain`, `reflect`, and `memory_edit` with `forget` only. `learn` retains into whichever of these backends is active.
+With the local backend active, `learn` saves explicit durable lessons to the project's `learned.md`. Lessons are newest-first, deduplicated, secret-redacted, capped at 100 entries, and injected starting with the next session; a `learn` call does not mutate the active session's prompt-cache prefix. Each lesson's content is capped at 2,000 characters and optional context at 400 characters. Structured memory search, `recall`, `retain`, `reflect`, and `memory_edit` are not available for the local backend. Hindsight exposes `recall`, `retain`, and `reflect`; Mnemopi exposes `recall`, `retain`, `reflect`, and `memory_edit` (`update`/`forget`/`invalidate`); claude-mem exposes `recall`, `retain`, `reflect`, `memory_edit` with `forget` only, and `work_state_write`/`work_state_read` for cross-session to-do lists. `learn` retains into whichever of these backends is active.
 
 ## How it works
 

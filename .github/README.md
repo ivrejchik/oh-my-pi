@@ -136,7 +136,7 @@ gh issue close <N> --repo ivrejchik/oh-my-pi
 | --- | --- |
 | claude-mem: ядро | `packages/coding-agent/src/claude-mem/**`; настройки в `claude-mem/settings.ts`, зарегистрированы в `config/all-settings.ts` |
 | claude-mem: выбор бэкенда | `memory-backend/{settings,resolve,types,index}.ts`, условие `claudeMemActive` в `config/settings-ui.ts`, группа `Claude-mem` в `packages/tui/src/overlays/settings-defs.ts` |
-| claude-mem: инструменты | `tools/{memory-recall,memory-retain,memory-reflect,memory-edit,learn,index}.ts`, `prompts/tools/memory-edit.md`, `internal-urls/memory-protocol.ts` |
+| claude-mem: инструменты | `tools/{memory-recall,memory-retain,memory-reflect,memory-edit,work-state,learn,index,builtin-names}.ts`, `memory-backend/tool-names.ts`, `task/read-only-policy.ts`, `prompts/tools/{memory-edit,work-state-write,work-state-read}.md`, `internal-urls/memory-protocol.ts`; доки `docs/tools/work_state_{write,read}.md` |
 | claude-mem: авторизация ходов (через IRC и для сабагентов) | `session/{agent-session,irc-bridge,session-memory}.ts`, `irc/bus.ts`, `task/{index,executor,structured-subagent,workpool}.ts`, `eval/agent-bridge.ts`, `vibe/runtime.ts`, `sdk.ts` |
 | Keenable | `web/search/providers/keenable.ts`, `web/search/provider.ts`, `packages/tui/src/tools/web-search-types.ts`, `priority.json` (цепочка `web`, сразу после Exa), `packages/catalog/src/compat/rules/{providers/web.kdl,auth/keenable.kdl,auth/_order.kdl}`, `compat/auth-ids.ts`, `cli/help-extra.ts` |
 | Встроенный агент | `prompts/agents/architecture-deep-researcher.md`, `task/agents.ts` |

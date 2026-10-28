@@ -31,13 +31,17 @@ export const TOOL_NAME_MAP: Readonly<Record<string, string>> = {
 	notebook_edit: "NotebookEdit",
 };
 
-/** omp memory tools never become observations — that would feed recall back into memory. */
+/**
+ * omp memory tools never become observations — that would feed recall back into memory.
+ * `work_state_read` echoes stored work state; `work_state_write` is observed, as the plugin does.
+ */
 export const OBSERVATION_SKIP_TOOLS: Readonly<Record<string, true>> = {
 	recall: true,
 	retain: true,
 	reflect: true,
 	memory_edit: true,
 	learn: true,
+	work_state_read: true,
 };
 
 const OBS_TYPE_GLYPH: Readonly<Record<string, string>> = {

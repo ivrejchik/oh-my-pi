@@ -3,12 +3,15 @@
  *
  * Speaks the same REST surface the plugin's own hook CLI and MCP server use
  * (`/api/sessions/*`, `/api/search`, `/api/context/inject`, `/api/memory/save`,
- * …) so an omp session is indistinguishable from a Claude Code session on the
- * worker side. Writes (prompt, observation, summary, manual save) carry the
- * configured `platformSource`; sessions are keyed on
+ * `/api/work-state`, …) so an omp session is indistinguishable from a Claude
+ * Code session on the worker side. Writes (prompt, observation, summary, manual
+ * save) carry the configured `platformSource`; sessions are keyed on
  * `(platform_source, content_session_id)` server-side. Reads send no source, so
  * the worker answers from every pool: omp sees Claude Code's history and the
- * other way round.
+ * other way round. Prompt registration, context injection, summaries, saves and
+ * work-state calls send the session `cwd` and let the worker derive the project
+ * key with the resolver observation ingest uses (worktrees, markers,
+ * environments) and apply `CLAUDE_MEM_EXCLUDED_PROJECTS`.
  */
 
 import { isRecord } from "@oh-my-pi/pi-utils";
@@ -77,7 +80,8 @@ export interface ClaudeMemSearchResult {
 }
 
 export interface ClaudeMemSearchOptions {
-	project?: string;
+	/** Project keys to search (the checkout's read keys, worktree parent included); omitted = every project. */
+	projects?: string[];
 	limit?: number;
 	offset?: number;
 	/** Comma-separated observation types (`decision,bugfix,…`). */
@@ -119,7 +123,8 @@ export interface ClaudeMemStats {
 
 export interface ClaudeMemSessionInitInput {
 	contentSessionId: string;
-	project: string;
+	/** Session checkout; the worker resolves the project key from it. */
+	cwd: string;
 	prompt: string;
 }
 
@@ -151,22 +156,29 @@ export interface ClaudeMemObservationInput {
 export interface ClaudeMemSummarizeInput {
 	contentSessionId: string;
 	lastAssistantMessage: string;
+	cwd: string;
 	observedModel?: string;
 }
 
 export interface ClaudeMemSaveInput {
 	text: string;
 	title?: string;
-	project: string;
+	/** Session checkout; the worker names the project from it and refuses excluded checkouts. */
+	cwd: string;
 	metadata?: Record<string, unknown>;
 }
 
-export interface ClaudeMemSaveResult {
-	success: boolean;
-	id: number;
-	title?: string;
-	project?: string;
-	message?: string;
+/** `skipped` (with `reason`, e.g. `project_excluded`) means nothing was stored and there is no `id`. */
+export type ClaudeMemSaveResult =
+	| { skipped: false; id: number; title?: string; project?: string; message?: string }
+	| { skipped: true; reason: string };
+
+export interface ClaudeMemWorkStateWriteInput {
+	cwd: string;
+	/** List name, 1–200 characters. */
+	list: string;
+	/** Keys to set; values are strings, finite numbers, booleans, or null to clear. */
+	fields: Record<string, string | number | boolean | null>;
 }
 
 export type ClaudeMemQueuedStatus = { status: "queued" } | { status: "skipped"; reason?: string };
@@ -342,10 +354,14 @@ export class ClaudeMemClient {
 
 	// ---- hook equivalents --------------------------------------------------
 
-	/** SessionStart context block (markdown) for the given project names; last is primary. */
-	async contextInject(projects: string[], signal?: AbortSignal): Promise<string> {
+	/**
+	 * SessionStart context block (markdown) for the checkout at `cwd`. The worker
+	 * resolves the checkout's read keys, opens with the work-state section, and
+	 * answers empty for an excluded checkout.
+	 */
+	async contextInject(cwd: string, signal?: AbortSignal): Promise<string> {
 		const text = await this.#request("GET", "/api/context/inject", "context", {
-			query: { projects: projects.join(",") },
+			query: { cwd },
 			signal,
 			text: true,
 		});
@@ -358,7 +374,7 @@ export class ClaudeMemClient {
 		const raw = await this.#request("POST", "/api/sessions/init", "session-init", {
 			body: {
 				contentSessionId: input.contentSessionId,
-				project: input.project,
+				cwd: input.cwd,
 				prompt: input.prompt,
 				platformSource: this.platformSource,
 			},
@@ -401,6 +417,7 @@ export class ClaudeMemClient {
 				contentSessionId: input.contentSessionId,
 				last_assistant_message: input.lastAssistantMessage,
 				platformSource: this.platformSource,
+				cwd: input.cwd,
 				observedModel: input.observedModel,
 			},
 			signal,
@@ -414,7 +431,7 @@ export class ClaudeMemClient {
 			query: {
 				query,
 				format: "json",
-				project: options.project,
+				projects: options.projects?.join(","),
 				limit: options.limit,
 				offset: options.offset,
 				obs_type: options.obsType,
@@ -495,21 +512,53 @@ export class ClaudeMemClient {
 	async saveMemory(input: ClaudeMemSaveInput, signal?: AbortSignal): Promise<ClaudeMemSaveResult> {
 		const body: Record<string, unknown> = {
 			text: input.text,
-			project: input.project,
+			cwd: input.cwd,
 			metadata: { ...input.metadata, platformSource: this.platformSource },
 		};
 		if (input.title) body.title = input.title;
 		const raw = await this.#request("POST", "/api/memory/save", "memory-save", { body, signal });
 		const res = isRecord(raw) ? raw : {};
+		if (res.skipped === true) {
+			return { skipped: true, reason: typeof res.reason === "string" ? res.reason : "skipped" };
+		}
 		if (typeof res.id !== "number")
 			throw new ClaudeMemError("memory-save returned no observation id", undefined, raw);
 		return {
-			success: res.success !== false,
+			skipped: false,
 			id: res.id,
 			title: typeof res.title === "string" ? res.title : undefined,
 			project: typeof res.project === "string" ? res.project : undefined,
 			message: typeof res.message === "string" ? res.message : undefined,
 		};
+	}
+
+	// ---- work state ---------------------------------------------------------------
+
+	/**
+	 * Append one entry to a work-state list under the checkout's primary project.
+	 * Returns the worker's plain-text answer: what is still open in the list, or
+	 * why nothing was saved (excluded project, viewer-only list).
+	 */
+	async workStateWrite(input: ClaudeMemWorkStateWriteInput, signal?: AbortSignal): Promise<string> {
+		const text = await this.#request("POST", "/api/work-state/entries", "work-state-write", {
+			body: { cwd: input.cwd, list: input.list, fields: input.fields },
+			signal,
+			text: true,
+		});
+		return typeof text === "string" ? text.trim() : "";
+	}
+
+	/** Open work-state items for the checkout's read keys (one list, closed items optional), as plain text. */
+	async workStateRead(
+		input: { cwd: string; list?: string; includeClosed?: boolean },
+		signal?: AbortSignal,
+	): Promise<string> {
+		const text = await this.#request("GET", "/api/work-state", "work-state-read", {
+			query: { cwd: input.cwd, list: input.list, includeClosed: input.includeClosed ? "true" : undefined },
+			signal,
+			text: true,
+		});
+		return typeof text === "string" ? text.trim() : "";
 	}
 
 	/** Delete one observation; `false` when it does not exist. */

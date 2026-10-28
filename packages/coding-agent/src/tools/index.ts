@@ -76,6 +76,7 @@ import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TodoTool } from "./todo";
 import { WriteTool } from "./write";
 import { WaitTool } from "./wait";
+import { WorkStateReadTool, WorkStateWriteTool } from "./work-state";
 import { isMountableUnderXdev, resolveXdevTool, type XdevState } from "./xdev";
 import { YieldTool } from "./yield";
 
@@ -161,6 +162,7 @@ export * from "./tts";
 export * from "./vibe";
 export * from "./wait";
 export type { VibeToolDetails } from "@oh-my-pi/pi-tui/tools/vibe";
+export * from "./work-state";
 export * from "./write";
 export * from "./xdev";
 export * from "./yield";
@@ -584,6 +586,8 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	recall: MemoryRecallTool.createIf,
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
+	work_state_write: WorkStateWriteTool.createIf,
+	work_state_read: WorkStateReadTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
 };
 
@@ -715,6 +719,11 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		) {
 			requestedTools.push("memory_edit");
 		}
+		if (cfgMemoryBackend.get(session.settings) === "claude-mem") {
+			for (const name of ["work_state_write", "work_state_read"]) {
+				if (!requestedTools.includes(name)) requestedTools.push(name);
+			}
+		}
 		if (externalThinkingActive && !requestedTools.includes("think")) {
 			requestedTools.push("think");
 		}
@@ -780,6 +789,9 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 			return ["hindsight", "mnemopi", "claude-mem"].includes(cfgMemoryBackend.get(session.settings));
 		}
 		if (name === "memory_edit") return ["mnemopi", "claude-mem"].includes(cfgMemoryBackend.get(session.settings));
+		if (name === "work_state_write" || name === "work_state_read") {
+			return cfgMemoryBackend.get(session.settings) === "claude-mem";
+		}
 		if (name === "manage_skill")
 			return (
 				cfgAutolearnEnabled.get(session.settings) &&

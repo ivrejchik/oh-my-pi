@@ -28,6 +28,8 @@ export const BUILTIN_TOOL_NAMES = [
 	"recall",
 	"reflect",
 	"learn",
+	"work_state_write",
+	"work_state_read",
 	"manage_skill",
 ] as const;
 

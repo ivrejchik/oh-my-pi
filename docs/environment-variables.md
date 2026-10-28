@@ -541,9 +541,10 @@ are ignored.
 ### claude-mem memory backend
 
 `loadClaudeMemConfig()` resolves each supported environment override over the corresponding
-`claudeMem.*` setting and then the built-in default. Two knobs also consult the plugin's own
-`~/.claude-mem/settings.json`: the worker host/port fall back to it when no worker URL is set, and its
-`CLAUDE_MEM_API_TIMEOUT_MS` wins over `claudeMem.requestTimeoutMs`. String values are trimmed and an empty
+`claudeMem.*` setting and then the built-in default. Some knobs also consult the plugin's own
+`~/.claude-mem/settings.json`: the worker host/port fall back to it when no worker URL is set, its
+`CLAUDE_MEM_API_TIMEOUT_MS` wins over `claudeMem.requestTimeoutMs`, and `CLAUDE_MEM_EXCLUDED_PROJECTS` and
+`CLAUDE_MEM_WORK_STATE_ENABLED` are read from it when not set in the environment. String values are trimmed and an empty
 string is ignored. Boolean values are case-insensitive: only `true`, `1`, and `yes` mean true;
 any other defined value means false. Integer values use base-10 `parseInt`; non-numeric values
 are ignored, and the loader then applies the same minimums as the settings (`recallLimit` and
@@ -572,6 +573,8 @@ are ignored, and the loader then applies the same minimums as the settings (`rec
 | `CLAUDE_MEM_WORKER_START_TIMEOUT_MS` | `claudeMem.workerStartTimeoutMs`            | Integer milliseconds; default `45000`                                                                    |
 | `CLAUDE_MEM_FIRST_TURN_DEADLINE_MS`  | `claudeMem.firstTurnDeadlineMs`             | Integer milliseconds; default `8000`                                                                     |
 | `CLAUDE_MEM_DEBUG`                   | `claudeMem.debug`                           | Boolean; default `false`                                                                                 |
+| `CLAUDE_MEM_EXCLUDED_PROJECTS`       | plugin `settings.json` value                | Comma-separated cwd globs (`*`, `**`, `?`, leading `~`); a matching checkout is not tracked; default empty |
+| `CLAUDE_MEM_WORK_STATE_ENABLED`      | plugin `settings.json` value                | Boolean; `false` hides `work_state_write`/`work_state_read`; default `true`                              |
 
 An auto-started worker inherits the resolved `CLAUDE_MEM_DATA_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_CONFIG_DIR`, and `CLAUDE_MEM_WORKER_PORT` in its environment. See the [claude-mem memory backend](./claude-mem-memory-backend.md) guide.
 

@@ -8,6 +8,7 @@
  * composite `<primary>/<worktree>` name is what observations are written to.
  */
 
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
@@ -44,4 +45,51 @@ export function resolveClaudeMemProject(cwd: string): ClaudeMemProjectContext {
 		return { primary: composite, allProjects: [parent, composite] };
 	}
 	return { primary: name, allProjects: [name] };
+}
+
+/** `*`, `**`, `?` and a leading `~`, as the plugin's `globToRegex` (utils/project-filter.ts). */
+function globToRegex(pattern: string): RegExp {
+	let expanded = pattern.replace(/\\/g, "/");
+	if (expanded === "~") expanded = os.homedir();
+	else if (expanded.startsWith("~/")) expanded = path.join(os.homedir(), expanded.slice(2));
+	expanded = expanded.replace(/\\/g, "/");
+	const regex = expanded
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		// A complete `**/` segment also matches no directory.
+		.replace(/(^|\/)\*\*(?=\/)/g, "$1<<<GLOBSTAR_DIR>>>")
+		.replace(/\*\*/g, "<<<GLOBSTAR>>>")
+		.replace(/\*/g, "[^/]*")
+		.replace(/\?/g, "[^/]")
+		.replace(/<<<GLOBSTAR>>>/g, ".*")
+		.replace(/<<<GLOBSTAR_DIR>>>\//g, "(?:.*/)?");
+	return new RegExp(`^${regex}$`);
+}
+
+/**
+ * Mirrors the plugin's `isProjectExcluded(cwd, CLAUDE_MEM_EXCLUDED_PROJECTS)`:
+ * comma-separated globs matched against the full path and its basename;
+ * `dir/**` also covers `dir` itself. An invalid pattern is skipped.
+ */
+export function isClaudeMemProjectExcluded(cwd: string, patterns: string): boolean {
+	if (!patterns.trim()) return false;
+	const normalized = cwd.replace(/\\/g, "/");
+	const base = path.posix.basename(normalized);
+	for (const pattern of patterns
+		.split(",")
+		.map(p => p.trim())
+		.filter(Boolean)) {
+		try {
+			const regex = globToRegex(pattern);
+			if (regex.test(normalized) || regex.test(base)) return true;
+			if (
+				pattern.replace(/\\/g, "/").endsWith("/**") &&
+				globToRegex(pattern.slice(0, -3)).test(normalized.replace(/\/+$/, ""))
+			) {
+				return true;
+			}
+		} catch {
+			// Invalid pattern: the plugin logs and skips it.
+		}
+	}
+	return false;
 }

@@ -22,11 +22,11 @@ claudeMem:
 With this backend enabled, the coding agent:
 
 1. Probes the worker (`/api/health`, then readiness) in the background and, when the daemon is down and `claudeMem.autoStartWorker` is on, launches it through the plugin's own `worker-service.cjs start` script. Session creation never blocks on the spawn.
-2. Loads the plugin's SessionStart context block through `/api/context/inject` for the project and injects it into the system prompt as a `<claude_mem_context>` block (`claudeMem.autoContext`).
-3. Registers every new user prompt with the worker through `/api/sessions/init` (`contentSessionId` = the omp session id, `project`, `prompt`).
-4. On the first model turn waits up to 8 seconds for the startup context, then runs a project-scoped `/api/search` for the prompt (`claudeMem.autoRecall`) and injects the results as a `<memories>` block.
+2. Loads the plugin's SessionStart context block through `/api/context/inject?cwd=…` and injects it into the system prompt as a `<claude_mem_context>` block (`claudeMem.autoContext`). The worker resolves the checkout's project keys from `cwd`; since claude-mem 15 the block opens with the open work-state lists (see `work_state_write` below).
+3. Registers every new user prompt with the worker through `/api/sessions/init` (`contentSessionId` = the omp session id, `cwd`, `prompt`).
+4. On the first model turn waits up to 8 seconds for the startup context, then runs a project-scoped `/api/search` (`projects=` the checkout's read keys) for the prompt (`claudeMem.autoRecall`) and injects the results as a `<memories>` block.
 5. Sends every tool result to `/api/sessions/observations` in order through a per-session write queue (`claudeMem.autoObserve`).
-6. At agent end (terminal turn only) sends the final assistant message to `/api/sessions/summarize` (`claudeMem.autoSummarize`).
+6. At agent end (terminal turn only) sends the final assistant message and `cwd` to `/api/sessions/summarize` (`claudeMem.autoSummarize`).
 7. Adds project-scoped recall as extra compaction context when compaction asks the backend for `preCompactionContext`.
 8. Uses the normal `/memory view`, `/memory stats`, `/memory diagnose`, `/memory queue`, `/memory clear`, and `/memory enqueue` commands through the shared memory backend interface.
 
@@ -73,7 +73,11 @@ When the running worker reports a version that differs from the resolved plugin 
 
 ## Project naming
 
-The project name mirrors the plugin's own `getProjectContext(cwd)`: the basename of the repository checkout root (or of the working directory outside a repository; an empty cwd yields `unknown-project`). A linked git worktree writes observations, prompts, and summaries under the composite `<primary>/<worktree>` name and injects startup context for both `<primary>` and `<primary>/<worktree>`, so the worktree sees the shared repository history plus its own. Explicit `recall`/`reflect` searches are scoped to the primary name first and widen to every project only when the scoped search is empty.
+Writes — prompts, observations, summaries, manual saves, work state — and the startup context send the session `cwd` and let the worker name the project with the resolver its own hooks use (`getProjectContext`: checkout root basename, worktree composites `<primary>/<worktree>`, git-remote or environment naming, markers). omp keeps a local mirror of the path-based naming for searches and `/memory stats`: the basename of the repository checkout root (or of the working directory outside a repository; an empty cwd yields `unknown-project`), and for a linked git worktree the read keys `<primary>` and `<primary>/<worktree>`, so the worktree sees the shared repository history plus its own. First-turn recall and explicit `recall`/`reflect` search those read keys first and widen to every project only when that search is empty.
+
+## Project exclusions
+
+A checkout matching `CLAUDE_MEM_EXCLUDED_PROJECTS` (environment, then `~/.claude-mem/settings.json`; comma-separated globs with `*`, `**`, `?`, and a leading `~`, matched against the full path and its basename, `dir/**` also covering `dir`) is treated like the plugin's hooks treat it: no startup context, no first-turn recall, no prompt registration, no observations, no summaries. Explicit `recall`/`reflect` and `memory://` still read. `retain`/`learn` saves and `work_state_write` are refused by the worker with a "project is excluded" message.
 
 ## Platform source
 
@@ -87,6 +91,7 @@ Selecting claude-mem makes these discoverable tools available:
 - `retain` — store an explicit note as an observation under the current project (`/api/memory/save`). Tool results and turn summaries are already recorded automatically; retain only what a tool did not show.
 - `reflect` — gather every relevant observation for a broader question.
 - `memory_edit` — `forget` only. claude-mem observations are LLM-generated rows on the shared worker; there is no update or invalidate operation, so `memory_edit` deletes the observation by id (`DELETE /api/observation/<id>`; `forget` reports `false` when the id does not exist).
+- `work_state_write` / `work_state_read` — the plugin's cross-session to-do lists and working state (`POST /api/work-state/entries`, `GET /api/work-state`, keyed by `cwd`). Each write appends one entry to a list (`task` + `status` for a to-do item, other keys for list state) and returns what is still open; open items show in the next session's `<claude_mem_context>` block and in claude-mem's My Work view. Offered unless `CLAUDE_MEM_WORK_STATE_ENABLED` is `false`. `work_state_read` results are never observed.
 
 The optional `learn` tool also retains into claude-mem when `autolearn.enabled: true`.
 
@@ -165,6 +170,8 @@ Resolution order is `CLAUDE_MEM_*` environment > `claudeMem.*` setting > built-i
 | `CLAUDE_MEM_WORKER_START_TIMEOUT_MS` | `claudeMem.workerStartTimeoutMs`                 | Integer milliseconds                                                        |
 | `CLAUDE_MEM_FIRST_TURN_DEADLINE_MS`  | `claudeMem.firstTurnDeadlineMs`                  | Integer milliseconds                                                        |
 | `CLAUDE_MEM_DEBUG`                   | `claudeMem.debug`                                | Boolean                                                                     |
+| `CLAUDE_MEM_EXCLUDED_PROJECTS`       | plugin `settings.json` value                     | Comma-separated cwd globs; see [Project exclusions](#project-exclusions)    |
+| `CLAUDE_MEM_WORK_STATE_ENABLED`      | plugin `settings.json` value (default `true`)    | Boolean; `false` hides `work_state_write` / `work_state_read`               |
 
 String values are trimmed and an empty string is ignored. Booleans are case-insensitive: `true`, `1`, and `yes` mean true; any other defined value means false. Integers use base-10 `parseInt`; non-numeric values are ignored, then the same minimums as the settings apply. See the [environment-variable reference](./environment-variables.md#claude-mem-memory-backend).
 

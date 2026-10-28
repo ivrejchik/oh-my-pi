@@ -24,6 +24,7 @@ import {
 	ClaudeMemError,
 	type ClaudeMemObservation,
 	type ClaudeMemSessionSummary,
+	type ClaudeMemWorkStateWriteInput,
 } from "./client";
 import type { ClaudeMemConfig } from "./config";
 import {
@@ -35,7 +36,7 @@ import {
 	resolveObservedTool,
 	TOOL_NAME_MAP,
 } from "./content";
-import type { ClaudeMemProjectContext } from "./project";
+import { type ClaudeMemProjectContext, isClaudeMemProjectExcluded } from "./project";
 import type { ClaudeMemWorkerProbe } from "./worker";
 
 const RECALL_PREAMBLE =
@@ -253,6 +254,16 @@ export class ClaudeMemSessionState {
 		return this.session.sessionManager.getCwd();
 	}
 
+	/**
+	 * The checkout matches `CLAUDE_MEM_EXCLUDED_PROJECTS`. Like the plugin's hooks
+	 * (`shouldTrackProject`), an excluded session loads no context, recalls and
+	 * registers nothing, and records no observations or summaries; explicit
+	 * recall still reads. Saves and work-state writes are refused by the worker.
+	 */
+	get excluded(): boolean {
+		return isClaudeMemProjectExcluded(this.cwd, this.config.excludedProjects);
+	}
+
 	/** Writes still waiting on the ordered queue. */
 	get pendingWrites(): number {
 		return this.#queued;
@@ -352,10 +363,14 @@ export class ClaudeMemSessionState {
 	/** Fetch the plugin's SessionStart context block and promote it into the base prompt. */
 	loadContext(): Promise<void> {
 		if (this.aliasOf || !this.config.autoContext) return Promise.resolve();
+		if (this.excluded) {
+			this.contextSnippet = undefined;
+			return Promise.resolve();
+		}
 		const task = (async () => {
 			let snippet: string | undefined;
 			try {
-				const text = await this.client.contextInject(this.project.allProjects);
+				const text = await this.client.contextInject(this.cwd);
 				snippet = text ? `<claude_mem_context>\n${text}\n</claude_mem_context>` : undefined;
 			} catch (error) {
 				this.#reportFailure("context load", error);
@@ -399,6 +414,7 @@ export class ClaudeMemSessionState {
 				},
 			};
 		}
+		if (this.excluded) return { commit: () => this.#promptGeneration === generation };
 		const prompt = promptText.trim();
 
 		// First turn: give the bootstrap (and the startup context behind it) a
@@ -460,7 +476,7 @@ export class ClaudeMemSessionState {
 			try {
 				const result = await this.client.sessionInit({
 					contentSessionId,
-					project: this.project.primary,
+					cwd: this.cwd,
 					prompt,
 				});
 				// A `skipped` answer (wholly private prompt, internal protocol
@@ -488,7 +504,7 @@ export class ClaudeMemSessionState {
 	async recallForContext(query: string, signal?: AbortSignal): Promise<string | undefined> {
 		try {
 			const result = await this.client.search(query, {
-				project: this.project.primary,
+				projects: this.project.allProjects,
 				limit: this.config.recallLimit,
 				signal,
 			});
@@ -537,7 +553,7 @@ export class ClaudeMemSessionState {
 
 	/** Queue one tool result as an observation. No-op for skipped tools and disabled subagents. */
 	observeToolResult(toolName: string, args: unknown, result: unknown, isError: boolean, toolCallId?: string): void {
-		if (!this.config.autoObserve) return;
+		if (!this.config.autoObserve || this.excluded) return;
 		const observed = resolveObservedTool(toolName, args);
 		if (!observed) return;
 		if (this.aliasOf && !this.config.observeSubagents) return;
@@ -559,7 +575,7 @@ export class ClaudeMemSessionState {
 
 	/** Queue the turn's final assistant message for summarization. */
 	summarizeTurn(messages: AgentMessage[]): void {
-		if (!this.config.autoSummarize || this.aliasOf) return;
+		if (!this.config.autoSummarize || this.aliasOf || this.excluded) return;
 		const text = lastAssistantText(messages);
 		if (!text) return;
 		this.#enqueueSummarize(text);
@@ -580,6 +596,7 @@ export class ClaudeMemSessionState {
 		const payload = {
 			contentSessionId: turn?.contentSessionId ?? this.sessionId,
 			lastAssistantMessage: cleaned,
+			cwd: this.cwd,
 			observedModel: this.session.model?.id,
 		};
 		this.#enqueue("summarize", () => this.client.summarize(payload), { turn });
@@ -645,14 +662,18 @@ export class ClaudeMemSessionState {
 
 	// ---- explicit tools ------------------------------------------------------------------
 
-	/** Search observations/sessions, project-scoped first and widened to every project when empty. */
+	/** Search observations/sessions over the checkout's read keys first, widened to every project when empty. */
 	async search(
 		query: string,
 		options: { limit?: number; signal?: AbortSignal } = {},
 	): Promise<ClaudeMemRecallResults> {
 		await this.whenBootstrapped();
 		const limit = options.limit ?? this.config.recallLimit;
-		const scoped = await this.client.search(query, { project: this.project.primary, limit, signal: options.signal });
+		const scoped = await this.client.search(query, {
+			projects: this.project.allProjects,
+			limit,
+			signal: options.signal,
+		});
 		if (scoped.observations.length > 0 || scoped.sessions.length > 0) {
 			return { observations: scoped.observations, sessions: scoped.sessions, widened: false };
 		}
@@ -660,7 +681,11 @@ export class ClaudeMemSessionState {
 		return { observations: widened.observations, sessions: widened.sessions, widened: true };
 	}
 
-	/** Store an explicit note as an observation under the session's project. Returns the observation id. */
+	/**
+	 * Store an explicit note as an observation; the worker names the project from
+	 * the session checkout. Returns the observation id; throws when the worker
+	 * refuses the save (excluded project).
+	 */
 	async saveMemory(
 		content: string,
 		options: { title?: string; context?: string; source: string; importance?: number },
@@ -669,7 +694,7 @@ export class ClaudeMemSessionState {
 		const result = await this.client.saveMemory({
 			text: content,
 			title: options.title,
-			project: this.project.primary,
+			cwd: this.cwd,
 			metadata: {
 				source: options.source,
 				session_id: this.primary.sessionId,
@@ -678,7 +703,26 @@ export class ClaudeMemSessionState {
 				importance: options.importance ?? null,
 			},
 		});
+		if (result.skipped) {
+			throw new ClaudeMemError(
+				result.reason === "project_excluded"
+					? "Not saved: this project is excluded from claude-mem (CLAUDE_MEM_EXCLUDED_PROJECTS)."
+					: `Not saved: claude-mem skipped the note (${result.reason}).`,
+			);
+		}
 		return result.id;
+	}
+
+	/** `work_state_write`: append one entry to a list for this checkout; returns the worker's text answer. */
+	async workStateWrite(input: Omit<ClaudeMemWorkStateWriteInput, "cwd">, signal?: AbortSignal): Promise<string> {
+		await this.whenBootstrapped();
+		return await this.client.workStateWrite({ ...input, cwd: this.cwd }, signal);
+	}
+
+	/** `work_state_read`: open items (or one list, closed items optional) for this checkout, as text. */
+	async workStateRead(options: { list?: string; includeClosed?: boolean }, signal?: AbortSignal): Promise<string> {
+		await this.whenBootstrapped();
+		return await this.client.workStateRead({ ...options, cwd: this.cwd }, signal);
 	}
 
 	/** Delete an observation by id; `false` when it does not exist. */
